@@ -10,6 +10,9 @@ jobs:
   build-and-test:
     name: Build and Type Check
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/excalidrop
 
     strategy:
       matrix:
@@ -24,6 +27,7 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
+          cache-dependency-path: packages/excalidrop/package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -37,9 +41,9 @@ jobs:
       - name: Check build artifacts
         run: |
           echo "Checking if build artifacts exist..."
-          test -f dist/index.js || (echo "dist/index.js not found" && exit 1)
-          test -f dist/server.js || (echo "dist/server.js not found" && exit 1)
-          test -d dist/frontend || (echo "dist/frontend not found" && exit 1)
+          test -f packages/excalidrop/dist/index.js || (echo "dist/index.js not found" && exit 1)
+          test -f packages/excalidrop/dist/server.js || (echo "dist/server.js not found" && exit 1)
+          test -d packages/excalidrop/dist/frontend || (echo "dist/frontend not found" && exit 1)
           echo "All build artifacts present!"
 
       - name: Upload build artifacts
@@ -48,12 +52,15 @@ jobs:
         with:
           name: build-artifacts
           path: |
-            dist/
+            packages/excalidrop/dist/
           retention-days: 7
 
   lint-check:
     name: Lint Check
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/excalidrop
 
     steps:
       - name: Checkout code
@@ -64,6 +71,7 @@ jobs:
         with:
           node-version: '20.x'
           cache: 'npm'
+          cache-dependency-path: packages/excalidrop/package-lock.json
 
       - name: Install dependencies
         run: npm ci

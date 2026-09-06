@@ -48,8 +48,11 @@ function sanitizeFilePath(filePath: string): string {
   return resolved;
 }
 
-// Express server configuration
-const EXPRESS_SERVER_URL = process.env.EXPRESS_SERVER_URL || 'http://127.0.0.1:3000';
+// Express server configuration (mutable — switch_canvas repoints it at runtime)
+let ACTIVE_CANVAS_URL = process.env.EXPRESS_SERVER_URL || 'http://127.0.0.1:3000';
+function activeCanvasUrl(): string {
+  return process.env.EXPRESS_SERVER_URL || ACTIVE_CANVAS_URL;
+}
 const ENABLE_CANVAS_SYNC = process.env.ENABLE_CANVAS_SYNC !== 'false'; // Default to true
 
 // API Response types
@@ -80,7 +83,7 @@ async function syncToCanvas(operation: string, data: any): Promise<SyncResponse 
     
     switch (operation) {
       case 'create':
-        url = `${EXPRESS_SERVER_URL}/api/elements`;
+        url = `${activeCanvasUrl()}/api/elements`;
         options = {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -89,7 +92,7 @@ async function syncToCanvas(operation: string, data: any): Promise<SyncResponse 
         break;
         
       case 'update':
-        url = `${EXPRESS_SERVER_URL}/api/elements/${data.id}`;
+        url = `${activeCanvasUrl()}/api/elements/${data.id}`;
         options = {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -98,12 +101,12 @@ async function syncToCanvas(operation: string, data: any): Promise<SyncResponse 
         break;
         
       case 'delete':
-        url = `${EXPRESS_SERVER_URL}/api/elements/${data.id}`;
+        url = `${activeCanvasUrl()}/api/elements/${data.id}`;
         options = { method: 'DELETE' };
         break;
         
       case 'batch_create':
-        url = `${EXPRESS_SERVER_URL}/api/elements/batch`;
+        url = `${activeCanvasUrl()}/api/elements/batch`;
         options = {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -169,7 +172,7 @@ async function getElementFromCanvas(elementId: string): Promise<ServerElement | 
   }
 
   try {
-    const response = await fetch(`${EXPRESS_SERVER_URL}/api/elements/${elementId}`);
+    const response = await fetch(`${activeCanvasUrl()}/api/elements/${elementId}`);
     if (!response.ok) {
       logger.warn(`Failed to fetch element ${elementId}: ${response.status}`);
       return null;
@@ -809,6 +812,27 @@ const tools: Tool[] = [
     }
   },
   {
+    name: 'list_canvases',
+    description: 'List running local excalidrop canvases by probing ports 3030-3230 plus the current canvas. Use to let Claude switch between canvases.',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'switch_canvas',
+    description: 'Switch this MCP session to a different running canvas. Pass port (e.g. 3031) or url. Persists via EXPRESS_SERVER_URL for subsequent tool calls.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        port: { type: 'number', description: 'Canvas port' },
+        url: { type: 'string', description: 'Canvas URL (alternative to port)' }
+      }
+    }
+  },
+  {
+    name: 'current_canvas',
+    description: 'Show the canvas URL this MCP session is currently pointed at.',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
     name: 'set_viewport',
     description: 'Control the canvas viewport (camera). Auto-fit all elements, center on a specific element, or set zoom/scroll directly. Requires the canvas frontend open in a browser.',
     inputSchema: {
@@ -1017,7 +1041,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
           }
           
           // Query elements from HTTP server
-          const url = `${EXPRESS_SERVER_URL}/api/elements/search?${queryParams}`;
+          const url = `${activeCanvasUrl()}/api/elements/search?${queryParams}`;
           const response = await fetch(url);
           
           if (!response.ok) {
@@ -1053,7 +1077,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
           case 'elements':
             try {
               // Get elements from HTTP server
-              const response = await fetch(`${EXPRESS_SERVER_URL}/api/elements`);
+              const response = await fetch(`${activeCanvasUrl()}/api/elements`);
               if (!response.ok) {
                 throw new Error(`HTTP server error: ${response.status} ${response.statusText}`);
               }
@@ -1358,7 +1382,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
         try {
           // Send the Mermaid diagram to the frontend via the API
           // The frontend will use mermaid-to-excalidraw to convert it
-          const response = await fetch(`${EXPRESS_SERVER_URL}/api/elements/from-mermaid`, {
+          const response = await fetch(`${activeCanvasUrl()}/api/elements/from-mermaid`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1380,7 +1404,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
           return {
             content: [{
               type: 'text',
-              text: `Mermaid diagram sent for conversion!\n\n${JSON.stringify(result, null, 2)}\n\n⚠️  Note: The actual conversion happens in the frontend canvas with DOM access. Open the canvas at ${EXPRESS_SERVER_URL} to see the diagram rendered.`
+              text: `Mermaid diagram sent for conversion!\n\n${JSON.stringify(result, null, 2)}\n\n⚠️  Note: The actual conversion happens in the frontend canvas with DOM access. Open the canvas at ${activeCanvasUrl()} to see the diagram rendered.`
             }]
           };
         } catch (error) {
@@ -1466,7 +1490,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
       case 'clear_canvas': {
         logger.info('Clearing canvas via MCP');
 
-        const response = await fetch(`${EXPRESS_SERVER_URL}/api/elements/clear`, {
+        const response = await fetch(`${activeCanvasUrl()}/api/elements/clear`, {
           method: 'DELETE'
         });
 
@@ -1491,7 +1515,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
 
         logger.info('Exporting scene via MCP');
 
-        const response = await fetch(`${EXPRESS_SERVER_URL}/api/elements`);
+        const response = await fetch(`${activeCanvasUrl()}/api/elements`);
         if (!response.ok) {
           throw new Error(`Failed to fetch elements: ${response.status} ${response.statusText}`);
         }
@@ -1502,7 +1526,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
         // Fetch files for image elements
         let sceneFiles: Record<string, any> = {};
         try {
-          const filesResponse = await fetch(`${EXPRESS_SERVER_URL}/api/files`);
+          const filesResponse = await fetch(`${activeCanvasUrl()}/api/files`);
           if (filesResponse.ok) {
             const filesData = await filesResponse.json() as any;
             sceneFiles = filesData.files || {};
@@ -1573,7 +1597,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
 
         // If replace mode, clear first
         if (params.mode === 'replace') {
-          await fetch(`${EXPRESS_SERVER_URL}/api/elements/clear`, { method: 'DELETE' });
+          await fetch(`${activeCanvasUrl()}/api/elements/clear`, { method: 'DELETE' });
         }
 
         // Batch create the imported elements
@@ -1594,7 +1618,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
           const fileList = Object.values(importFiles);
           if (fileList.length > 0) {
             try {
-              await fetch(`${EXPRESS_SERVER_URL}/api/files`, {
+              await fetch(`${activeCanvasUrl()}/api/files`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(fileList)
@@ -1621,7 +1645,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
 
         logger.info('Exporting to image via MCP', { format: params.format });
 
-        const response = await fetch(`${EXPRESS_SERVER_URL}/api/export/image`, {
+        const response = await fetch(`${activeCanvasUrl()}/api/export/image`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1713,7 +1737,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
         const params = z.object({ name: z.string() }).parse(args);
         logger.info('Saving snapshot via MCP', { name: params.name });
 
-        const response = await fetch(`${EXPRESS_SERVER_URL}/api/snapshots`, {
+        const response = await fetch(`${activeCanvasUrl()}/api/snapshots`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: params.name })
@@ -1738,7 +1762,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
         logger.info('Restoring snapshot via MCP', { name: params.name });
 
         // Fetch the snapshot
-        const response = await fetch(`${EXPRESS_SERVER_URL}/api/snapshots/${encodeURIComponent(params.name)}`);
+        const response = await fetch(`${activeCanvasUrl()}/api/snapshots/${encodeURIComponent(params.name)}`);
         if (!response.ok) {
           throw new Error(`Snapshot "${params.name}" not found`);
         }
@@ -1746,7 +1770,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
         const data = await response.json() as { success: boolean; snapshot: { name: string; elements: ServerElement[]; createdAt: string } };
 
         // Clear current canvas
-        await fetch(`${EXPRESS_SERVER_URL}/api/elements/clear`, { method: 'DELETE' });
+        await fetch(`${activeCanvasUrl()}/api/elements/clear`, { method: 'DELETE' });
 
         // Restore elements
         const canvasElements = await batchCreateElementsOnCanvas(data.snapshot.elements);
@@ -1762,7 +1786,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
       case 'describe_scene': {
         logger.info('Describing scene via MCP');
 
-        const response = await fetch(`${EXPRESS_SERVER_URL}/api/elements`);
+        const response = await fetch(`${activeCanvasUrl()}/api/elements`);
         if (!response.ok) {
           throw new Error(`Failed to fetch elements: ${response.status}`);
         }
@@ -1877,7 +1901,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
 
         logger.info('Taking canvas screenshot via MCP');
 
-        const response = await fetch(`${EXPRESS_SERVER_URL}/api/export/image`, {
+        const response = await fetch(`${activeCanvasUrl()}/api/export/image`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1918,7 +1942,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
         logger.info('Exporting to excalidraw.com URL');
 
         // 1. Fetch current scene elements
-        const urlExportResponse = await fetch(`${EXPRESS_SERVER_URL}/api/elements`);
+        const urlExportResponse = await fetch(`${activeCanvasUrl()}/api/elements`);
         if (!urlExportResponse.ok) {
           throw new Error(`Failed to fetch elements: ${urlExportResponse.status}`);
         }
@@ -2215,7 +2239,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
 
         logger.info('Setting viewport via MCP', viewportParams);
 
-        const viewportResponse = await fetch(`${EXPRESS_SERVER_URL}/api/viewport`, {
+        const viewportResponse = await fetch(`${activeCanvasUrl()}/api/viewport`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(viewportParams)
@@ -2234,6 +2258,45 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
             text: `Viewport updated successfully.\n\n${JSON.stringify(viewportResult, null, 2)}`
           }]
         };
+      }
+
+      case 'list_canvases': {
+        const found: { url: string; port: number; healthy: boolean; elements?: number }[] = [];
+        const ports = new Set<number>();
+        try {
+          const u = new URL(activeCanvasUrl());
+          if (u.port) ports.add(Number(u.port));
+        } catch { /* ignore */ }
+        for (let p = 3030; p < 3230; p++) ports.add(p);
+        for (const port of ports) {
+          const url = `http://127.0.0.1:${port}`;
+          try {
+            const ctl = new AbortController();
+            const t = setTimeout(() => ctl.abort(), 150);
+            const r = await fetch(`${url}/health`, { signal: ctl.signal as any });
+            clearTimeout(t);
+            if (r.ok) {
+              const h = await r.json() as any;
+              found.push({ url, port, healthy: true, elements: h.elements_count });
+            }
+          } catch { /* not running */ }
+        }
+        return { content: [{ type: 'text', text: JSON.stringify({ current: activeCanvasUrl(), canvases: found }, null, 2) }] };
+      }
+
+      case 'switch_canvas': {
+        const sp = z.object({ port: z.number().optional(), url: z.string().optional() }).parse(args || {});
+        const surl = sp.url || (sp.port ? `http://127.0.0.1:${sp.port}` : null);
+        if (!surl) throw new Error('Pass { port } or { url }');
+        const r = await fetch(`${surl}/health`);
+        if (!r.ok) throw new Error(`No canvas at ${surl} (HTTP ${r.status})`);
+        ACTIVE_CANVAS_URL = surl;
+        process.env.EXPRESS_SERVER_URL = surl;
+        return { content: [{ type: 'text', text: `Switched to canvas ${surl}` }] };
+      }
+
+      case 'current_canvas': {
+        return { content: [{ type: 'text', text: activeCanvasUrl() }] };
       }
 
       default:

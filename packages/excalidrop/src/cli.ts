@@ -227,6 +227,17 @@ async function cmdInit(args: string[]): Promise<void> {
   fs.writeFileSync(path.join(root, CONFIG_NAME), JSON.stringify(config, null, 2) + '\n');
   console.log(`\nexcalidrop: canvas port ${port} saved to ${path.join(root, CONFIG_NAME)}`);
 
+  // Seed canvas.excalidraw so `npm i -D excalidrop` leaves a visible file
+  // that export_scene/import_scene round-trip through.
+  const scenePath = path.join(root, 'canvas.excalidraw');
+  if (!fs.existsSync(scenePath)) {
+    fs.writeFileSync(
+      scenePath,
+      JSON.stringify({ type: 'excalidraw', version: 2, source: 'excalidrop', elements: [], appState: { viewBackgroundColor: '#ffffff', gridSize: null }, files: {} }, null, 2) + '\n',
+    );
+    console.log(`excalidrop: empty scene written to ${scenePath}`);
+  }
+
   // Merge into .mcp.json (generic MCP clients + Claude Code project scope)
   const mcpPath = path.join(root, MCP_JSON);
   let mcp: Record<string, any> = {};
