@@ -1,3 +1,6 @@
+# Excalidrop per-project port (machine-local, picked free on `excalidrop init`)
+.excalidrop.json
+
 # Dependencies
 node_modules/
 

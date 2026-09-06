@@ -737,10 +737,14 @@ function App(): JSX.Element {
       // Filter out deleted elements
       const activeElements = currentElements.filter(el => !el.isDeleted)
 
+      // 2. Get current files (for image elements)
+      const currentFiles = excalidrawAPI.getFiles()
+      const filesArray = Object.values(currentFiles)
+
       // 3. Convert to backend format
       const backendElements = activeElements.map(convertToBackendFormat)
 
-      // 4. Send to backend
+      // 4. Send elements to backend
       const response = await fetch('/api/elements/sync', {
         method: 'POST',
         headers: {
@@ -754,8 +758,28 @@ function App(): JSX.Element {
 
       if (response.ok) {
         const result: ApiResponse = await response.json()
-        setLastSyncTime(new Date())
         console.log(`Sync successful: ${result.count} elements synced`)
+
+        // 5. Sync files if there are any image elements
+        if (filesArray.length > 0) {
+          console.log(`Syncing ${filesArray.length} files to backend`)
+          const filesResponse = await fetch('/api/files', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(filesArray)
+          })
+
+          if (filesResponse.ok) {
+            const filesResult = await filesResponse.json()
+            console.log(`Files sync successful: ${filesResult.count} files synced`)
+          } else {
+            console.error('Files sync failed:', await filesResponse.text())
+          }
+        }
+
+        setLastSyncTime(new Date())
 
         if (!silent) {
           setSyncStatus('success')

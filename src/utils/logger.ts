@@ -1,6 +1,8 @@
 import winston from 'winston';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
-const LOG_FILE_PATH = process.env.LOG_FILE_PATH || 'excalidraw.log';
+const LOG_FILE_PATH = process.env.LOG_FILE_PATH || join(tmpdir(), 'excalidraw.log');
 
 const logger: winston.Logger = winston.createLogger({
   level: process.env.LOG_LEVEL || 'info',

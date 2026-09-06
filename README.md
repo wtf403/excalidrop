@@ -91,6 +91,21 @@ Excalidraw now has an [official MCP](https://github.com/excalidraw/excalidraw-mc
 - Better testing loop: MCP Inspector CLI examples + browser screenshot checks (`agent-browser`)
 - Bugfixes: batch create now preserves element ids (fixes update/delete after batch); frontend entrypoint fixed (`main.tsx`)
 
+## Quick Start (excalidrop)
+
+```bash
+npm i -D excalidrop
+npx excalidrop init   # picks a free port, writes .excalidrop.json + .mcp.json, offers AI-agent install
+npx excalidrop up     # start this project's canvas
+```
+
+Each project gets its own port (scanned free from 3030), so several checkouts run concurrently. Agent config needs no hardcoded port — same pattern as `chrome-devtools-mcp`:
+
+```bash
+claude mcp add excalidrop --scope project -- npx -y excalidrop mcp
+codex mcp add excalidrop -- npx -y excalidrop mcp
+```
+
 ## Quick Start (Local)
 
 Prereqs: Node >= 18, npm
