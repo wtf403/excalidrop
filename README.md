@@ -1,8 +1,7 @@
 # Excalidraw MCP Server & Agent Skill
 
-[![CI](https://github.com/yctimlin/mcp_excalidraw/actions/workflows/ci.yml/badge.svg)](https://github.com/yctimlin/mcp_excalidraw/actions/workflows/ci.yml)
-[![Docker Build & Push](https://github.com/yctimlin/mcp_excalidraw/actions/workflows/docker.yml/badge.svg)](https://github.com/yctimlin/mcp_excalidraw/actions/workflows/docker.yml)
-[![NPM Version](https://img.shields.io/npm/v/mcp-excalidraw-server)](https://www.npmjs.com/package/mcp-excalidraw-server)
+[![CI](https://github.com/wtf403/excalidrop/actions/workflows/ci.yml/badge.svg)](https://github.com/wtf403/excalidrop/actions/workflows/ci.yml)
+[![NPM Version](https://img.shields.io/npm/v/excalidrop)](https://www.npmjs.com/package/excalidrop)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Run a live Excalidraw canvas and control it from AI agents. This repo provides:
@@ -14,7 +13,7 @@ Keywords: Excalidraw agent skill, Excalidraw MCP server, AI diagramming, Claude 
 
 ## Demo
 
-![MCP Excalidraw Demo](demo.gif)
+![MCP Excalidraw Demo](docs/demo.gif)
 
 *AI agent creates a complete architecture diagram from a single prompt (4x speed). [Watch full video on YouTube](https://youtu.be/ufW78Amq5qA)*
 
@@ -25,7 +24,6 @@ Keywords: Excalidraw agent skill, Excalidraw MCP server, AI diagramming, Claude 
 - [How We Differ from the Official Excalidraw MCP](#how-we-differ-from-the-official-excalidraw-mcp)
 - [What's New](#whats-new)
 - [Quick Start (Local)](#quick-start-local)
-- [Quick Start (Docker)](#quick-start-docker)
 - [Configure MCP Clients](#configure-mcp-clients)
   - [Claude Desktop](#claude-desktop)
   - [Claude Code](#claude-code)
@@ -87,7 +85,7 @@ Excalidraw now has an [official MCP](https://github.com/excalidraw/excalidraw-mc
 
 ### v1.x
 
-- Agent skill: `skills/excalidraw-skill/` (portable instructions + helper scripts for export/import and repeatable CRUD)
+- Agent skill: `packages/excalidrop/skills/excalidraw-skill/` (portable instructions + helper scripts for export/import and repeatable CRUD)
 - Better testing loop: MCP Inspector CLI examples + browser screenshot checks (`agent-browser`)
 - Bugfixes: batch create now preserves element ids (fixes update/delete after batch); frontend entrypoint fixed (`main.tsx`)
 
@@ -129,18 +127,9 @@ Terminal 2: run the MCP server (stdio)
 EXPRESS_SERVER_URL=http://127.0.0.1:3000 node dist/index.js
 ```
 
-## Quick Start (Docker)
-
-Canvas server:
-```bash
-docker run -d -p 3000:3000 --name mcp-excalidraw-canvas ghcr.io/yctimlin/mcp_excalidraw-canvas:latest
-```
-
-MCP server (stdio) is typically launched by your MCP client (Claude Desktop/Cursor/etc.). If you want a local container for it, use the image `ghcr.io/yctimlin/mcp_excalidraw:latest` and set `EXPRESS_SERVER_URL` to point at the canvas.
-
 ## Configure MCP Clients
 
-The MCP server runs over stdio and can be configured with any MCP-compatible client. Below are configurations for both **local** (requires cloning and building) and **Docker** (pull-and-run) setups.
+The MCP server runs over stdio and can be configured with any MCP-compatible client. The recommended path is `npm i -D excalidrop && npx excalidrop init` (per-project canvas + generated `.mcp.json`), which replaces the manual setups below.
 
 ### Environment Variables
 
@@ -174,23 +163,6 @@ Config location:
 }
 ```
 
-**Docker**
-```json
-{
-  "mcpServers": {
-    "excalidraw": {
-      "command": "docker",
-      "args": [
-        "run", "-i", "--rm",
-        "-e", "EXPRESS_SERVER_URL=http://host.docker.internal:3000",
-        "-e", "ENABLE_CANVAS_SYNC=true",
-        "ghcr.io/yctimlin/mcp_excalidraw:latest"
-      ]
-    }
-  }
-}
-```
-
 ---
 
 ### Claude Code
@@ -211,15 +183,6 @@ claude mcp add excalidraw --scope project \
   -e EXPRESS_SERVER_URL=http://127.0.0.1:3000 \
   -e ENABLE_CANVAS_SYNC=true \
   -- node /absolute/path/to/mcp_excalidraw/dist/index.js
-```
-
-**Docker**
-```bash
-claude mcp add excalidraw --scope user \
-  -- docker run -i --rm \
-  -e EXPRESS_SERVER_URL=http://host.docker.internal:3000 \
-  -e ENABLE_CANVAS_SYNC=true \
-  ghcr.io/yctimlin/mcp_excalidraw:latest
 ```
 
 **Manage servers:**
@@ -250,23 +213,6 @@ Config location: `.cursor/mcp.json` in your project root (or `~/.cursor/mcp.json
 }
 ```
 
-**Docker**
-```json
-{
-  "mcpServers": {
-    "excalidraw": {
-      "command": "docker",
-      "args": [
-        "run", "-i", "--rm",
-        "-e", "EXPRESS_SERVER_URL=http://host.docker.internal:3000",
-        "-e", "ENABLE_CANVAS_SYNC=true",
-        "ghcr.io/yctimlin/mcp_excalidraw:latest"
-      ]
-    }
-  }
-}
-```
-
 ---
 
 ### Codex CLI
@@ -279,15 +225,6 @@ codex mcp add excalidraw \
   --env EXPRESS_SERVER_URL=http://127.0.0.1:3000 \
   --env ENABLE_CANVAS_SYNC=true \
   -- node /absolute/path/to/mcp_excalidraw/dist/index.js
-```
-
-**Docker**
-```bash
-codex mcp add excalidraw \
-  -- docker run -i --rm \
-  -e EXPRESS_SERVER_URL=http://host.docker.internal:3000 \
-  -e ENABLE_CANVAS_SYNC=true \
-  ghcr.io/yctimlin/mcp_excalidraw:latest
 ```
 
 **Manage servers:**
@@ -320,20 +257,6 @@ Config location: `~/.config/opencode/opencode.json` or project-level `opencode.j
 }
 ```
 
-**Docker**
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "excalidraw": {
-      "type": "local",
-      "command": ["docker", "run", "-i", "--rm", "-e", "EXPRESS_SERVER_URL=http://host.docker.internal:3000", "-e", "ENABLE_CANVAS_SYNC=true", "ghcr.io/yctimlin/mcp_excalidraw:latest"],
-      "enabled": true
-    }
-  }
-}
-```
-
 ---
 
 ### Antigravity (Google)
@@ -356,35 +279,17 @@ Config location: `~/.gemini/antigravity/mcp_config.json`
 }
 ```
 
-**Docker**
-```json
-{
-  "mcpServers": {
-    "excalidraw": {
-      "command": "docker",
-      "args": [
-        "run", "-i", "--rm",
-        "-e", "EXPRESS_SERVER_URL=http://host.docker.internal:3000",
-        "-e", "ENABLE_CANVAS_SYNC=true",
-        "ghcr.io/yctimlin/mcp_excalidraw:latest"
-      ]
-    }
-  }
-}
-```
-
 ---
 
 ### Notes
 
-- **Docker networking**: Use `host.docker.internal` to reach the canvas server running on your host machine. On Linux, you may need `--add-host=host.docker.internal:host-gateway` or use `172.17.0.1`.
-- **Canvas server**: Must be running before the MCP server connects. Start it with `npm run canvas` (local) or `docker run -d -p 3000:3000 ghcr.io/yctimlin/mcp_excalidraw-canvas:latest` (Docker).
+- **Canvas server**: Must be running before the MCP server connects. Start it with `npx excalidrop up`.
 - **Absolute paths**: When using local node setup, replace `/absolute/path/to/mcp_excalidraw` with the actual path where you cloned and built the repo.
 - **In-memory storage**: The canvas server stores elements in memory. Restarting the server will clear all elements. Use the export/import scripts if you need persistence.
 
 ## Agent Skill (Optional)
 
-This repo includes a skill at `skills/excalidraw-skill/` that provides:
+This repo includes a skill at `packages/excalidrop/skills/excalidraw-skill/` that provides:
 
 - **Workflow playbook** (`SKILL.md`): step-by-step guidance for drawing, refining, and exporting diagrams
 - **Cheatsheet** (`references/cheatsheet.md`): MCP tool and REST API reference
@@ -396,7 +301,7 @@ The skill complements the MCP server by giving your AI agent structured workflow
 
 ```bash
 mkdir -p ~/.codex/skills
-cp -R skills/excalidraw-skill ~/.codex/skills/excalidraw-skill
+cp -R packages/excalidrop/skills/excalidraw-skill ~/.codex/skills/excalidraw-skill
 ```
 
 To update an existing installation, remove the old folder first (`rm -rf ~/.codex/skills/excalidraw-skill`) then re-copy.
@@ -406,13 +311,13 @@ To update an existing installation, remove the old folder first (`rm -rf ~/.code
 **User-level** (available across all your projects):
 ```bash
 mkdir -p ~/.claude/skills
-cp -R skills/excalidraw-skill ~/.claude/skills/excalidraw-skill
+cp -R packages/excalidrop/skills/excalidraw-skill ~/.claude/skills/excalidraw-skill
 ```
 
 **Project-level** (scoped to a specific project, can be committed to the repo):
 ```bash
 mkdir -p /path/to/your/project/.claude/skills
-cp -R skills/excalidraw-skill /path/to/your/project/.claude/skills/excalidraw-skill
+cp -R packages/excalidrop/skills/excalidraw-skill /path/to/your/project/.claude/skills/excalidraw-skill
 ```
 
 Then invoke the skill in Claude Code with `/excalidraw-skill`.
@@ -424,9 +329,9 @@ To update an existing installation, remove the old folder first then re-copy.
 All scripts respect `EXPRESS_SERVER_URL` (default `http://127.0.0.1:3000`) or accept `--url`.
 
 ```bash
-EXPRESS_SERVER_URL=http://127.0.0.1:3000 node skills/excalidraw-skill/scripts/healthcheck.cjs
-EXPRESS_SERVER_URL=http://127.0.0.1:3000 node skills/excalidraw-skill/scripts/export-elements.cjs --out diagram.elements.json
-EXPRESS_SERVER_URL=http://127.0.0.1:3000 node skills/excalidraw-skill/scripts/import-elements.cjs --in diagram.elements.json --mode batch
+EXPRESS_SERVER_URL=http://127.0.0.1:3000 node packages/excalidrop/skills/excalidraw-skill/scripts/healthcheck.cjs
+EXPRESS_SERVER_URL=http://127.0.0.1:3000 node packages/excalidrop/skills/excalidraw-skill/scripts/export-elements.cjs --out diagram.elements.json
+EXPRESS_SERVER_URL=http://127.0.0.1:3000 node packages/excalidrop/skills/excalidraw-skill/scripts/import-elements.cjs --in diagram.elements.json --mode batch
 ```
 
 ### When The Skill Is Useful
@@ -436,7 +341,7 @@ EXPRESS_SERVER_URL=http://127.0.0.1:3000 node skills/excalidraw-skill/scripts/im
 - Automated smoke tests: create/update/delete a known element to validate a deployment.
 - Repeatable diagrams: keep a library of element JSON snippets and import them.
 
-See `skills/excalidraw-skill/SKILL.md` and `skills/excalidraw-skill/references/cheatsheet.md`.
+See `packages/excalidrop/skills/excalidraw-skill/SKILL.md` and `packages/excalidrop/skills/excalidraw-skill/references/cheatsheet.md`.
 
 ## MCP Tools (26 Total)
 
@@ -451,7 +356,7 @@ See `skills/excalidraw-skill/SKILL.md` and `skills/excalidraw-skill/references/c
 | **Design Guide** | `read_diagram_guide` |
 | **Resources** | `get_resource` |
 
-Full schemas are discoverable via `tools/list` or in `skills/excalidraw-skill/references/cheatsheet.md`.
+Full schemas are discoverable via `tools/list` or in `packages/excalidrop/skills/excalidraw-skill/references/cheatsheet.md`.
 
 ## Testing
 

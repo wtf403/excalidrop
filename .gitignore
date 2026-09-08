@@ -13,6 +13,7 @@ public/dist/
 
 # Logs
 *.log
+logs/
 
 # Editor artifacts
 .cursor/

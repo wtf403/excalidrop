@@ -1,8 +1,8 @@
 {
   "private": true,
-  "workspaces": ["packages/*"],
   "scripts": {
-    "build": "npm run build -w excalidrop",
-    "dev": "npm run dev -w excalidrop"
+    "build": "npm --prefix packages/excalidrop run build",
+    "dev": "npm --prefix packages/excalidrop run dev",
+    "type-check": "npm --prefix packages/excalidrop run type-check"
   }
 }
