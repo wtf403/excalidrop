@@ -45,9 +45,9 @@ jobs:
       - name: Verify build artifacts
         run: |
           echo "Verifying build artifacts..."
-          test -f packages/excalidrop/dist/index.js || (echo "ERROR: dist/index.js not found" && exit 1)
-          test -f packages/excalidrop/dist/server.js || (echo "ERROR: dist/server.js not found" && exit 1)
-          test -d packages/excalidrop/dist/frontend || (echo "ERROR: dist/frontend not found" && exit 1)
+          test -f dist/index.js || (echo "ERROR: dist/index.js not found" && exit 1)
+          test -f dist/server.js || (echo "ERROR: dist/server.js not found" && exit 1)
+          test -d dist/frontend || (echo "ERROR: dist/frontend not found" && exit 1)
           echo "All required artifacts present!"
 
       - name: Get package version
