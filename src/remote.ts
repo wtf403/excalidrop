@@ -1,16 +1,12 @@
 #!/usr/bin/env node
-/** Remote MCP-v2: bearer-authed HTTP, per-session project switching, GitHub-backed scenes.
- *  No local canvas editing: all writes go through here and commit to GitHub.
- *  Endpoints: POST /mcp/:tool  {session, args}  | GET /mcp/projects | POST /mcp/use_project
- */
-import express from 'express';
+import express, { type Express } from 'express';
 import dotenv from 'dotenv';
 import logger from './utils/logger.js';
 import { generateId } from './types.js';
-import { loadScene, saveScene, syncPages, allowedRepos, currentRepo, SCENE_PATH } from './utils/github.js';
+import { loadScene, saveScene, syncPages, allowedRepos, currentRepo, SCENE_PATH, updateRepoMetadata } from './utils/github.js';
 
 dotenv.config();
-const app = express();
+const app: Express = express();
 app.use(express.json({ limit: '10mb' }));
 const BEARER = process.env.MCP_BEARER || '';
 if (!BEARER) logger.warn('MCP_BEARER not set — remote is open (set it in production)');
@@ -55,6 +51,7 @@ function scheduleCommit(st: ProjectState): void {
       st.sha = await saveScene(st.repo, els, files, st.sha, `excalidrop: update ${els.length} elements`);
       const cur = await import('./utils/github.js');
       await cur.syncPages(st.repo, { type: 'excalidraw', version: 2, source: 'excalidrop', elements: els });
+      await cur.updateRepoMetadata(st.repo, { homepage: `https://${st.repo.replace('/', '.github.io/')}/` });
       st.dirty = false;
     } catch (e) { logger.warn('commit failed: ' + (e as Error).message); }
   }, Number(process.env.COMMIT_DEBOUNCE_MS || 15000));
