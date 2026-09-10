@@ -107,6 +107,7 @@ const validateAndFixBindings = (elements: Partial<ExcalidrawElement>[]): Partial
   return elements.map(element => {
     const fixedElement = { ...element };
 
+    if (fixedElement.boundElements) {
       if (Array.isArray(fixedElement.boundElements)) {
         fixedElement.boundElements = fixedElement.boundElements.filter((binding: any) => {
           if (!binding || typeof binding !== 'object') return false;
@@ -129,6 +130,7 @@ const validateAndFixBindings = (elements: Partial<ExcalidrawElement>[]): Partial
     }
 
     if (fixedElement.containerId) {
+      const containerElement = elementMap.get(fixedElement.containerId);
       if (!containerElement) {
         fixedElement.containerId = null;
       }
@@ -271,7 +273,6 @@ function App(): JSX.Element {
   const [isConnected, setIsConnected] = useState<boolean>(false)
   const websocketRef = useRef<WebSocket | null>(null)
 
-  // Sync state management
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('idle')
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null)
   const autoSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -797,14 +798,12 @@ function App(): JSX.Element {
     }
   }
 
-  // Data format conversion for backend
   const convertToBackendFormat = (element: ExcalidrawElement): ServerElement => {
     return {
       ...element
     } as ServerElement
   }
 
-  // Format sync time display
   const formatSyncTime = (time: Date | null): string => {
     if (!time) return ''
     return time.toLocaleTimeString('zh-CN', {
@@ -814,7 +813,6 @@ function App(): JSX.Element {
     })
   }
 
-  // Main sync function
   const syncToBackend = async (options: { silent?: boolean } = {}): Promise<void> => {
     const { silent = false } = options
 
@@ -838,21 +836,16 @@ function App(): JSX.Element {
     }
 
     try {
-      // 1. Get current elements
       const currentElements = excalidrawAPI.getSceneElements()
       console.log(`Syncing ${currentElements.length} elements to backend`)
 
-      // Filter out deleted elements
       const activeElements = currentElements.filter(el => !el.isDeleted)
 
-      // 2. Get current files (for image elements)
       const currentFiles = excalidrawAPI.getFiles()
       const filesArray = Object.values(currentFiles)
 
-      // 3. Convert to backend format
       const backendElements = activeElements.map(convertToBackendFormat)
 
-      // 4. Send elements to backend
       const response = await fetch('/api/elements/sync', {
         method: 'POST',
         headers: {
@@ -868,7 +861,6 @@ function App(): JSX.Element {
         const result: ApiResponse = await response.json()
         console.log(`Sync successful: ${result.count} elements synced`)
 
-        // 5. Sync files if there are any image elements
         if (filesArray.length > 0) {
           console.log(`Syncing ${filesArray.length} files to backend`)
           const filesResponse = await fetch('/api/files', {
@@ -891,7 +883,6 @@ function App(): JSX.Element {
 
         if (!silent) {
           setSyncStatus('success')
-          // Reset status after 2 seconds
           setTimeout(() => setSyncStatus('idle'), 2000)
         }
       } else {
@@ -937,7 +928,6 @@ function App(): JSX.Element {
   const clearCanvas = async (): Promise<void> => {
     if (excalidrawAPI) {
       try {
-        // Get all current elements and delete them from backend
       const response = await fetch('/api/elements', { headers: authHeaders() })
         const result: ApiResponse = await response.json()
 
@@ -948,14 +938,12 @@ function App(): JSX.Element {
           await Promise.all(deletePromises)
         }
 
-        // Clear the frontend canvas
         applySceneUpdateWithoutAutoSync(excalidrawAPI, {
           elements: [],
           captureUpdate: CaptureUpdateAction.IMMEDIATELY
         })
       } catch (error) {
         console.error('Error clearing canvas:', error)
-        // Still clear frontend even if backend fails
         applySceneUpdateWithoutAutoSync(excalidrawAPI, {
           elements: [],
           captureUpdate: CaptureUpdateAction.IMMEDIATELY
@@ -971,18 +959,15 @@ function App(): JSX.Element {
   const startLogin = async (): Promise<void> => {
     const gh = await import('./utils/ghSync')
     if (loginCode.trim()) {
-      // Owner fast path: paste a PAT (gh auth token) — zero OAuth setup
       gh.setToken(loginCode.trim())
       setGhToken(loginCode.trim())
       setLoginCode('')
       setShowLogin(false)
       return
     }
-    // Try device flow — if CORS blocks it, fall back to agent handoff message
     try {
       const flow = await gh.startDeviceFlow(gh.CLIENT_ID)
       setDeviceInfo({ user_code: flow.user_code, verification_uri: flow.verification_uri })
-      // Open the verification URL in a new tab
       window.open(flow.verification_uri, '_blank')
     } catch (err) {
       console.warn('Device flow blocked by CORS, showing agent handoff:', err)
