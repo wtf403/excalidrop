@@ -18,11 +18,10 @@ git -C "$WORK" add -A && git -C "$WORK" -c user.name=excalidrop -c user.email=ex
 if ! gh api "repos/${REPO}/git/ref/heads/main" >/dev/null 2>&1; then
   SEED=$(mktemp -d)
   git init -b main "$SEED" >/dev/null
-  cp "$WORK/canvas.excalidraw" "$SEED/canvas.excalidraw"
-  OWNER_LC="$(echo "$REPO" | tr '[:upper:]' '[:lower:]' | cut -d/ -f1)"
-  REPO_NAME="$(echo "$REPO" | cut -d/ -f2)"
-  printf '# %s\n\nExcalidrop canvas. Source of truth: `main:canvas.excalidraw`. Viewer: https://%s.github.io/%s/\n' "$REPO" "$OWNER_LC" "$REPO_NAME" > "$SEED/README.md"
-  git -C "$SEED" add -A && git -C "$SEED" -c user.name=excalidrop -c user.email=excalidrop@local commit -m "excalidrop: init main (canvas source of truth)" --quiet
+  # Empty commit only: main must exist so it stays the default branch,
+  # but setup puts NO files there (no canvas, no README). The canvas
+  # lives on gh-pages until the agent's first draw commits it.
+  git -C "$SEED" -c user.name=excalidrop -c user.email=excalidrop@local commit --allow-empty -m "init main" --quiet
   git -C "$SEED" remote add origin "git@github.com:${REPO}.git"
   git -C "$SEED" push origin main >/dev/null
   rm -rf "$SEED"
