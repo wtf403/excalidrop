@@ -3,7 +3,7 @@ import express, { type Express } from 'express';
 import dotenv from 'dotenv';
 import logger from './utils/logger.js';
 import { generateId } from './types.js';
-import { loadScene, saveScene, syncPages, allowedRepos, currentRepo, SCENE_PATH, updateRepoMetadata } from './utils/github.js';
+import { loadScene, saveScene, syncPages, allowedRepos, currentRepo, SCENE_PATH } from './utils/github.js';
 
 dotenv.config();
 const app: Express = express();
@@ -51,7 +51,6 @@ function scheduleCommit(st: ProjectState): void {
       st.sha = await saveScene(st.repo, els, files, st.sha, `excalidrop: update ${els.length} elements`);
       const cur = await import('./utils/github.js');
       await cur.syncPages(st.repo, { type: 'excalidraw', version: 2, source: 'excalidrop', elements: els });
-      await cur.updateRepoMetadata(st.repo, { homepage: `https://${st.repo.replace('/', '.github.io/')}/` });
       st.dirty = false;
     } catch (e) { logger.warn('commit failed: ' + (e as Error).message); }
   }, Number(process.env.COMMIT_DEBOUNCE_MS || 15000));
