@@ -94,6 +94,8 @@
     "skills/**/*",
     "*.d.ts",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "tsconfig.json",
+    "vite.config.js"
   ]
 }
