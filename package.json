@@ -89,6 +89,7 @@
   "files": [
     "src/**/*",
     "dist/**/*",
+    "frontend/**/*",
     "scripts/**/*",
     "skills/**/*",
     "*.d.ts",
