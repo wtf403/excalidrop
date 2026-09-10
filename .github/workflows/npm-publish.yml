@@ -1,6 +1,9 @@
 name: Publish to NPM
 
 on:
+  push:
+    branches:
+      - main
   release:
     types: [published]
   workflow_dispatch:
@@ -16,9 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-            permissions:
-      contents: read
-      id-token: write
+      permissions:
+          contents: read
+          id-token: write
 
     steps:
       - name: Checkout code
@@ -49,6 +52,16 @@ jobs:
           test -d dist/frontend || (echo "ERROR: dist/frontend not found" && exit 1)
           echo "All required artifacts present!"
 
+      - name: Auto-bump version on push
+        if: github.event_name == 'push'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          npm version patch -m "chore: bump version to %s [skip ci]"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Get package version
         id: package-version
         run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
@@ -63,6 +76,12 @@ jobs:
             echo "exists=false" >> $GITHUB_OUTPUT
             echo "Version ${{ steps.package-version.outputs.version }} does not exist on NPM"
           fi
+
+      - name: Publish to NPM (Push)
+        if: github.event_name == 'push' && steps.check-version.outputs.exists == 'false'
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish to NPM (Release)
         if: github.event_name == 'release' && steps.check-version.outputs.exists == 'false'
