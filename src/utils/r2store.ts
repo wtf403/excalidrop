@@ -1,12 +1,6 @@
 import crypto from 'node:crypto';
 
-/**
- * Minimal S3-compatible R2 client over fetch with AWS SigV4.
- * Reads creds from env (GH Actions secrets):
- *  R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET, R2_KEY_PREFIX
- *  CLOUDFLARER2TOKEN supported as "accountId:keyId:secret" or "keyId:secret" or raw secret
- *  (with R2_ACCOUNT_ID also set) for seamless setup.
- */
+
 export interface R2Config {
   accountId: string; keyId: string; secret: string; bucket: string; prefix: string; endpoint: string;
 }

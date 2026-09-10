@@ -1,25 +1,4 @@
 #!/usr/bin/env node
-/**
- * excalidrop — per-project Excalidraw canvas + MCP server setup.
- *
- * Modelled on the `chrome-devtools-mcp` install pattern (`npx -y <pkg>` +
- * `mcpServers` JSON), with one addition: per-project dynamic port selection
- * so multiple checkouts can run their own canvas concurrently.
- *
- * How the dynamic port works:
- *  - `excalidrop init` picks a free port (default scan from 3030) and writes
- *    it to `.excalidrop.json` in the project root.
- *  - `excalidrop mcp` (what the AI agent runs via stdio) resolves that same
- *    file by walking up from cwd, so each project transparently gets its own
- *    canvas URL with nothing hardcoded in the agent config.
- *
- * Commands:
- *  init   pick a port, write .excalidrop.json + .mcp.json, offer agent install
- *  up     start the canvas server on this project's port
- *  mcp    run the MCP stdio server pointed at this project's canvas (for agents)
- *  status show resolved port + canvas health
- *  add    print / run AI-agent install commands
- */
 
 import { spawn, spawnSync } from 'node:child_process';
 import { createConnection } from 'node:net';
@@ -41,11 +20,11 @@ const PORT_SCAN_SIZE = 200;
 interface DropConfig {
   port: number;
   canvasUrl: string;
-  /** Remembered remote canvas (owner/repo) — MCP auto-loads it, agents skip switch_remote. */
+
   remote?: string;
 }
 
-// ─── port utils ──────────────────────────────────────────────────────────────
+
 
 function isPortFree(port: number, host = '127.0.0.1', timeoutMs = 300): Promise<boolean> {
   return new Promise((resolve) => {
@@ -71,7 +50,6 @@ async function findFreePort(preferred?: number, start = DEFAULT_START_PORT): Pro
   for (let port = start; port < start + PORT_SCAN_SIZE; port++) {
     if (await isPortFree(port)) return port;
   }
-  // Fallback: random high port
   for (let i = 0; i < 50; i++) {
     const port = 32000 + Math.floor(Math.random() * 2000);
     if (await isPortFree(port)) return port;
@@ -79,7 +57,7 @@ async function findFreePort(preferred?: number, start = DEFAULT_START_PORT): Pro
   throw new Error('Could not find a free port for the excalidrop canvas server.');
 }
 
-// ─── config discovery ────────────────────────────────────────────────────────
+
 
 function findProjectRoot(cwd: string): string {
   let dir = path.resolve(cwd);
@@ -112,7 +90,7 @@ function findDropConfig(cwd: string): { dir: string; config: DropConfig } | null
           };
         }
       } catch {
-        // corrupt config → ignore, treat as missing
+
       }
     }
     if (dir === root) return null;
@@ -130,7 +108,7 @@ function portFromExpressUrl(url: string | undefined): number | undefined {
   }
 }
 
-/** Resolve this project's canvas port without side effects (used by `mcp`). */
+
 function resolveSavedPort(cwd: string): number {
   const envPort = Number(process.env.EXCALIDROP_PORT);
   if (Number.isFinite(envPort) && envPort > 0) return envPort;
@@ -141,11 +119,10 @@ function resolveSavedPort(cwd: string): number {
   return DEFAULT_START_PORT;
 }
 
-// ─── agent config snippets (chrome-devtools-mcp style) ───────────────────────
+
 
 function mcpServerJson(): Record<string, unknown> {
-  // No hardcoded port: `excalidrop mcp` resolves `.excalidrop.json` at runtime,
-  // so the same snippet works for every project, concurrently.
+
   return {
     mcpServers: {
       excalidrop: {
@@ -216,7 +193,7 @@ function commandExists(cmd: string): boolean {
   return probe.status === 0;
 }
 
-// ─── commands ────────────────────────────────────────────────────────────────
+
 
 function detectSlug(): string {
   try {
@@ -237,17 +214,12 @@ async function cmdInit(args: string[]): Promise<void> {
   const slug = detectSlug();
 
   const port = await findFreePort(preferred);
-  // Preselect this repo as the remote canvas: the MCP auto-loads it, so the
-  // agent never needs switch_remote for its home project (chrome-devtools-mcp
-  // wrapper pattern: in-memory default + persisted startup target — ours
-  // persists in .excalidrop.json so it survives restarts too).
   const config: DropConfig = { port, canvasUrl: `http://127.0.0.1:${port}`, ...(slug ? { remote: slug } : {}) };
   fs.writeFileSync(path.join(root, CONFIG_NAME), JSON.stringify(config, null, 2) + '\n');
   console.log(`\nexcalidrop: canvas port ${port} saved to ${path.join(root, CONFIG_NAME)}`);
   if (slug) console.log(`excalidrop: remote canvas preselected: ${slug} (agent uses it automatically)`);
 
-  // Seed canvas.excalidraw so `npm i -D excalidrop` leaves a visible file
-  // that export_scene/import_scene round-trip through.
+
   const scenePath = path.join(root, 'canvas.excalidraw');
   if (!fs.existsSync(scenePath)) {
     fs.writeFileSync(
@@ -257,7 +229,7 @@ async function cmdInit(args: string[]): Promise<void> {
     console.log(`excalidrop: empty scene written to ${scenePath}`);
   }
 
-  // Merge into .mcp.json (generic MCP clients + Claude Code project scope)
+
   const mcpPath = path.join(root, MCP_JSON);
   let mcp: Record<string, any> = {};
   if (fs.existsSync(mcpPath)) {
@@ -282,7 +254,7 @@ async function cmdInit(args: string[]): Promise<void> {
     return;
   }
 
-  // Guided remote setup: gh auth → publish empty canvas → agent install → login
+
   if (slug) {
     if (!ghAuthed()) {
       console.log('GitHub: not logged in. Run `gh auth login` first (2FA via GitHub), then re-run init.\n');
@@ -308,7 +280,7 @@ async function cmdInit(args: string[]): Promise<void> {
     return;
   }
 
-  // Try the CLIs that exist; fall back to printing snippets.
+
   let installed = false;
   if (commandExists('claude')) {
     const scopeAnswer = await prompt('Claude Code scope? [project/user] (default: project) ');
@@ -343,8 +315,7 @@ async function cmdUp(args: string[]): Promise<void> {
   const root = findProjectRoot(process.cwd());
   const existing = findDropConfig(process.cwd());
 
-  // Reuse the saved port if it's still free (stable URL per project),
-  // otherwise claim a new one so concurrent projects never collide.
+
   let port: number;
   if (preferred) {
     port = await findFreePort(preferred);
@@ -368,7 +339,7 @@ async function cmdUp(args: string[]): Promise<void> {
 }
 
 function cmdMcp(): void {
-  // What the agent runs over stdio. Port resolves per-project at runtime.
+
   const port = resolveSavedPort(process.cwd());
   const canvasUrl = process.env.EXPRESS_SERVER_URL || `http://127.0.0.1:${port}`;
   const child = spawn(process.execPath, [MCP_ENTRY], {
@@ -409,8 +380,7 @@ function cmdRemote(): void {
   child.on('exit', (code) => process.exit(code ?? 0));
 }
 
-/** One-command per-user setup on ANY repo: gh auth → publish viewer → app install link. */
-async function cmdSetup(args: string[] = []): Promise<void> {
+async function cmdSetup(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     console.log('Usage: npx excalidrop setup\n\nChecks `gh auth`, publishes the viewer to this repo\'s gh-pages\n(enabling Pages if needed), then prints the app-install link and next steps.');
     return;
@@ -467,7 +437,6 @@ async function cmdSetup(args: string[] = []): Promise<void> {
   console.log('\nLogin on the page: pill → device code → github.com/login/device (2FA via GitHub).');
 }
 
-/** Terminal GitHub login via device flow (same flow the agent's github_login uses). */
 async function cmdLogin(): Promise<void> {
   const { APP_CLIENT_ID } = await import('./target.js');
   const clientId = process.env.GITHUB_OAUTH_CLIENT_ID || APP_CLIENT_ID;
@@ -510,7 +479,7 @@ Each project gets its own port (scanned free from ${DEFAULT_START_PORT}), so sev
 checkouts can run concurrently. Agent config needs no hardcoded port.`);
 }
 
-// ─── entry ───────────────────────────────────────────────────────────────────
+
 
 async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2);

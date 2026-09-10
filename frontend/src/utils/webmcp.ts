@@ -1,20 +1,4 @@
-/**
- * Thin WebMCP layer for the Excalidrop canvas.
- *
- * Exposes the live in-tab Excalidraw scene as browser-native tools via
- * `document.modelContext.registerTool()` (W3C WebML CG draft, Chromium 146+
- * behind `#enable-webmcp-testing`). No-ops where the API is absent.
- *
- * Tools mirror the local MCP names so agents recognise them:
- *  - describe_scene (read-only)
- *  - create_elements (write)
- *  - update_element (write)
- *  - delete_element (write)
- *  - clear_canvas (consequential)
- *
- * The page itself is the tool registry — no HTTP/SSE/stdio involved.
- * Auth/session comes for free: tools run inside the user's tab.
- */
+
 
 interface MinimalCanvasApi {
   getSceneElements(): Array<Record<string, any>>;
@@ -53,7 +37,7 @@ function getModelContext(): ModelContextLike | null {
       (nav['modelContext'] as ModelContextLike | undefined);
     if (mc && typeof mc.registerTool === 'function') return mc;
   } catch {
-    /* non-DOM / restricted context */
+
   }
   return null;
 }
@@ -64,7 +48,7 @@ function newId(): string {
       return (crypto as Crypto).randomUUID().slice(0, 12);
     }
   } catch {
-    /* fall through */
+
   }
   return `el_${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -107,11 +91,7 @@ const ELEMENT_SCHEMA: Record<string, unknown> = {
   additionalProperties: true,
 };
 
-/**
- * Register the thin WebMCP toolset against the live canvas.
- * Safe to call anywhere: feature-detects `document.modelContext` first.
- * Returns a handle whose `cleanup()` unregisters all tools (AbortSignal).
- */
+
 export function registerCanvasWebMCP(getApi: CanvasApiGetter): WebMCPHandle {
   const noop = () => {};
   const mc = getModelContext();
@@ -132,12 +112,12 @@ export function registerCanvasWebMCP(getApi: CanvasApiGetter): WebMCPHandle {
       const p = mc.registerTool(tool, { signal });
       if (p && typeof (p as Promise<void>).catch === 'function') {
         (p as Promise<void>).catch(() => {
-          /* duplicate / invalid — ignore, keeps thin layer best-effort */
+
         });
       }
       count += 1;
     } catch {
-      /* API present but rejected synchronously — ignore */
+
     }
   };
 
@@ -278,7 +258,7 @@ export function registerCanvasWebMCP(getApi: CanvasApiGetter): WebMCPHandle {
       try {
         controller.abort();
       } catch {
-        /* ignore */
+
       }
     },
   };

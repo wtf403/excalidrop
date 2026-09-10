@@ -8,16 +8,12 @@ export interface MermaidConversionResult {
   error?: string;
 }
 
-/**
- * Converts a Mermaid diagram definition to Excalidraw elements
- * This function needs to run in the browser context as it requires DOM access
- */
+
 export const convertMermaidToExcalidraw = async (
   mermaidDefinition: string,
   config?: MermaidConfig
 ): Promise<MermaidConversionResult> => {
   try {
-    // Parse the Mermaid diagram to Excalidraw elements
     const result = await parseMermaidToExcalidraw(mermaidDefinition, config);
     
     return {
@@ -33,9 +29,7 @@ export const convertMermaidToExcalidraw = async (
   }
 };
 
-/**
- * Default Mermaid configuration for Excalidraw conversion
- */
+
 export const DEFAULT_MERMAID_CONFIG: MermaidConfig = {
   startOnLoad: false,
   flowchart: {

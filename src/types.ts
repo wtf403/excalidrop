@@ -108,7 +108,7 @@ export interface ExcalidrawBinding {
 
 export type ExcalidrawElementType = 'rectangle' | 'ellipse' | 'diamond' | 'arrow' | 'text' | 'line' | 'freedraw' | 'image';
 
-// Excalidraw element types
+
 export const EXCALIDRAW_ELEMENT_TYPES: Record<string, ExcalidrawElementType> = {
   RECTANGLE: 'rectangle',
   ELLIPSE: 'ellipse',
@@ -120,7 +120,7 @@ export const EXCALIDRAW_ELEMENT_TYPES: Record<string, ExcalidrawElementType> = {
   IMAGE: 'image'
 } as const;
 
-// Server-side element with metadata
+
 export interface ServerElement extends Omit<ExcalidrawElementBase, 'id'> {
   id: string;
   type: ExcalidrawElementType;
@@ -138,12 +138,12 @@ export interface ServerElement extends Omit<ExcalidrawElementBase, 'id'> {
     text: string;
   };
   points?: any;
-  // Arrow element binding: connect arrows to shapes by element ID
+
   start?: { id: string };
   end?: { id: string };
 }
 
-// API Response types
+
 export interface ApiResponse<T = any> {
   success: boolean;
   data?: T;
@@ -167,7 +167,7 @@ export interface SyncResponse extends ApiResponse {
   afterCount: number;
 }
 
-// WebSocket message types
+
 export interface WebSocketMessage {
   type: WebSocketMessageType;
   [key: string]: any;
@@ -226,7 +226,7 @@ export interface MermaidConvertMessage extends WebSocketMessage {
   timestamp: string;
 }
 
-// Mermaid conversion types
+
 export interface MermaidConfig {
   startOnLoad?: boolean;
   flowchart?: {
@@ -250,13 +250,13 @@ export interface MermaidConversionResponse extends ApiResponse {
   count: number;
 }
 
-// Canvas cleared message
+
 export interface CanvasClearedMessage extends WebSocketMessage {
   type: 'canvas_cleared';
   timestamp: string;
 }
 
-// Image export types
+
 export interface ExportImageRequestMessage extends WebSocketMessage {
   type: 'export_image_request';
   requestId: string;
@@ -264,7 +264,7 @@ export interface ExportImageRequestMessage extends WebSocketMessage {
   background?: boolean;
 }
 
-// Viewport control types
+
 export interface SetViewportMessage extends WebSocketMessage {
   type: 'set_viewport';
   requestId: string;
@@ -275,20 +275,20 @@ export interface SetViewportMessage extends WebSocketMessage {
   offsetY?: number;
 }
 
-// Snapshot types
+
 export interface Snapshot {
   name: string;
   elements: ServerElement[];
   createdAt: string;
 }
 
-// In-memory storage for Excalidraw elements
+
 export const elements = new Map<string, ServerElement>();
 
-// In-memory storage for snapshots
+
 export const snapshots = new Map<string, Snapshot>();
 
-// In-memory file storage for image elements (Excalidraw BinaryFiles)
+
 export interface ExcalidrawFile {
   id: string;
   dataURL: string;
@@ -297,7 +297,7 @@ export interface ExcalidrawFile {
 }
 export const files = new Map<string, ExcalidrawFile>();
 
-// Validation function for Excalidraw elements
+
 export function validateElement(element: Partial<ServerElement>): element is ServerElement {
   const requiredFields: (keyof ServerElement)[] = ['type', 'x', 'y'];
   const hasRequiredFields = requiredFields.every(field => field in element);
@@ -313,14 +313,12 @@ export function validateElement(element: Partial<ServerElement>): element is Ser
   return true;
 }
 
-// Helper function to generate unique IDs
+
 export function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2);
 }
 
-// Normalize fontFamily from string names to numeric values that Excalidraw expects
-// Excalidraw uses: 1 = Virgil (handwritten), 2 = Helvetica (sans-serif), 3 = Cascadia (monospace)
-// 5 = Excalifont, 6 = Nunito, 7 = Lilita One, 8 = Comic Shanns
+
 export function normalizeFontFamily(fontFamily: string | number | undefined): number | undefined {
   if (fontFamily === undefined) return undefined;
   if (typeof fontFamily === 'number') return fontFamily;

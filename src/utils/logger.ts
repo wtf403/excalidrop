@@ -21,12 +21,12 @@ const logger: winston.Logger = winston.createLogger({
 
   transports: [
     new winston.transports.Console({
-      level: 'warn',                 // only warn+error to stderr
+      level: 'warn',
       stderrLevels: ['warn','error']
     }),
 
     new winston.transports.File({
-      filename: LOG_FILE_PATH,    // all levels to file
+      filename: LOG_FILE_PATH,
       level: 'debug'
     })
   ]

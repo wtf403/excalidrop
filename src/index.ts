@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// Disable colors to prevent ANSI color codes from breaking JSON parsing
+
 process.env.NODE_DISABLE_COLORS = '1';
 process.env.NO_COLOR = '1';
 
@@ -30,10 +30,10 @@ import {
 } from './types.js';
 import fetch from 'node-fetch';
 
-// Load environment variables
+
 dotenv.config();
 
-// Safe file path validation to prevent path traversal attacks
+
 const ALLOWED_EXPORT_DIR = process.env.EXCALIDRAW_EXPORT_DIR || process.cwd();
 
 function sanitizeFilePath(filePath: string): string {
@@ -48,14 +48,14 @@ function sanitizeFilePath(filePath: string): string {
   return resolved;
 }
 
-// Express server configuration (mutable — switch_canvas repoints it at runtime)
+
 let ACTIVE_CANVAS_URL = process.env.EXPRESS_SERVER_URL || 'http://127.0.0.1:3000';
 function activeCanvasUrl(): string {
   return process.env.EXPRESS_SERVER_URL || ACTIVE_CANVAS_URL;
 }
-const ENABLE_CANVAS_SYNC = process.env.ENABLE_CANVAS_SYNC !== 'false'; // Default to true
+const ENABLE_CANVAS_SYNC = process.env.ENABLE_CANVAS_SYNC !== 'false';
 
-// API Response types
+
 interface ApiResponse {
   success: boolean;
   element?: ServerElement;
@@ -70,7 +70,7 @@ interface SyncResponse {
   elements?: ServerElement[];
 }
 
-// Helper functions to sync with Express server (canvas) or remote GitHub target
+
 async function syncToCanvas(operation: string, data: any): Promise<SyncResponse | null> {
   const tgt = await import('./target.js');
   if (tgt.isRemote()) {
@@ -150,31 +150,26 @@ async function syncToCanvas(operation: string, data: any): Promise<SyncResponse 
   }
 }
 
-// Helper to sync element creation to canvas
 async function createElementOnCanvas(elementData: ServerElement): Promise<ServerElement | null> {
   const result = await syncToCanvas('create', elementData);
   return result?.element || elementData;
 }
 
-// Helper to sync element update to canvas  
 async function updateElementOnCanvas(elementData: Partial<ServerElement> & { id: string }): Promise<ServerElement | null> {
   const result = await syncToCanvas('update', elementData);
   return result?.element || null;
 }
 
-// Helper to sync element deletion to canvas
 async function deleteElementOnCanvas(elementId: string): Promise<any> {
   const result = await syncToCanvas('delete', { id: elementId });
   return result;
 }
 
-// Helper to sync batch creation to canvas
 async function batchCreateElementsOnCanvas(elementsData: ServerElement[]): Promise<ServerElement[] | null> {
   const result = await syncToCanvas('batch_create', elementsData);
   return result?.elements || elementsData;
 }
 
-// Helper to fetch element from canvas
 async function getElementFromCanvas(elementId: string): Promise<ServerElement | null> {
   const tgt = await import('./target.js');
   if (tgt.isRemote()) {
@@ -199,7 +194,6 @@ async function getElementFromCanvas(elementId: string): Promise<ServerElement | 
   }
 }
 
-// In-memory storage for scene state
 interface SceneState {
   theme: string;
   viewport: { x: number; y: number; zoom: number };
@@ -214,12 +208,10 @@ const sceneState: SceneState = {
   groups: new Map()
 };
 
-// Points schema: accept both {x, y} objects and [x, y] tuples
 const PointObjectSchema = z.object({ x: z.number(), y: z.number() });
 const PointTupleSchema = z.tuple([z.number(), z.number()]);
 const PointSchema = z.union([PointObjectSchema, PointTupleSchema]);
 
-// Normalize points to [x, y] tuple format that Excalidraw expects
 function normalizePoints(points: Array<{ x: number; y: number } | [number, number]>): [number, number][] {
   return points.map(p => {
     if (Array.isArray(p)) return p as [number, number];
@@ -227,7 +219,6 @@ function normalizePoints(points: Array<{ x: number; y: number } | [number, numbe
   });
 }
 
-// Schema definitions using zod
 const ElementSchema = z.object({
   id: z.string().optional(),
   type: z.enum(Object.values(EXCALIDRAW_ELEMENT_TYPES) as [ExcalidrawElementType, ...ExcalidrawElementType[]]),
@@ -293,7 +284,6 @@ const ResourceSchema = z.object({
   resource: z.enum(['scene', 'library', 'theme', 'elements'])
 });
 
-// Diagram design guide — injected into LLM context via read_diagram_guide tool
 const DIAGRAM_DESIGN_GUIDE = `# Excalidraw Diagram Design Guide
 
 ## Color Palette
@@ -386,7 +376,7 @@ const DIAGRAM_DESIGN_GUIDE = `# Excalidraw Diagram Design Guide
 5. **Refinement** — align, distribute, adjust spacing, screenshot to verify
 `;
 
-// Tool definitions
+
 const tools: Tool[] = [
   {
     name: 'create_element',
@@ -910,7 +900,7 @@ const tools: Tool[] = [
   }
 ];
 
-// Initialize MCP server
+
 const server = new Server(
   {
     name: "mcp-excalidraw-server",
@@ -927,15 +917,13 @@ const server = new Server(
   }
 );
 
-// Helper function to convert text property to label format for Excalidraw
+
 function convertTextToLabel(element: ServerElement): ServerElement {
   const { text, ...rest } = element;
   if (text) {
-    // For standalone text elements, keep text as direct property
     if (element.type === 'text') {
-      return element; // Keep text as direct property
+      return element;
     }
-    // For other elements (rectangle, ellipse, diamond), convert to label format
     return {
       ...rest,
       label: { text }
@@ -944,11 +932,8 @@ function convertTextToLabel(element: ServerElement): ServerElement {
   return element;
 }
 
-// Set up request handler for tool calls
 let toolQueue: Promise<void> = Promise.resolve();
 
-// Serialized: concurrent tool calls (e.g. switch+create+commit in one block)
-// must not interleave against the remote scene store.
 async function handleToolCall(request: CallToolRequest) {
   try {
     const { name, arguments: args } = request.params;
@@ -965,7 +950,6 @@ async function handleToolCall(request: CallToolRequest) {
           id,
           ...elementProps,
           points: elementProps.points ? normalizePoints(elementProps.points) : undefined,
-          // Convert binding IDs to Excalidraw's start/end format
           ...(startElementId ? { start: { id: startElementId } } : {}),
           ...(endElementId ? { end: { id: endElementId } } : {}),
           createdAt: new Date().toISOString(),
@@ -973,17 +957,14 @@ async function handleToolCall(request: CallToolRequest) {
           version: 1
         };
 
-        // Normalize fontFamily from string names to numeric values
         if (element.fontFamily !== undefined) {
           element.fontFamily = normalizeFontFamily(element.fontFamily);
         }
 
-        // For bound arrows without explicit points, set a default
         if ((startElementId || endElementId) && !elementProps.points) {
           (element as any).points = [[0, 0], [100, 0]];
         }
 
-        // Convert text to label format for Excalidraw
         const excalidrawElement = convertTextToLabel(element);
 
         // Create element directly on HTTP server (no local storage)

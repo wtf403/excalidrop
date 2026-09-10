@@ -10,8 +10,6 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       output: {
-        // Excalidraw's font subsetting worker looks for these files by their
-        // original (unhashed) names. Preserve them so the 404 doesn't break export.
         chunkFileNames: (chunkInfo) => {
           if (chunkInfo.name.startsWith('subset-')) {
             return 'assets/[name].js'

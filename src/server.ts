@@ -31,7 +31,7 @@ import {
 import { z } from 'zod';
 import WebSocket from 'ws';
 
-// Load environment variables
+
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
@@ -41,12 +41,12 @@ const app: Express = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
 
-// Middleware
+
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(authOptional);
 
-// ─── R2 persistence (scene keyed by repo or SCENE_ID) ───
+
 const SCENE_KEY = `${process.env.GITHUB_REPOSITORY?.replace('/', '__') || process.env.SCENE_ID || 'default'}.json`;
 let r2Cfg = getR2Config();
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -69,7 +69,7 @@ function schedulePersist(): void {
 }
 void loadFromR2();
 
-// ─── GitHub OAuth (2FA via github.com login; code lives 10min, session 30d cookie) ───
+
 app.get('/api/auth/login', (req, res) => {
   const cid = process.env.GITHUB_CLIENT_ID;
   if (!cid) return res.status(500).json({ success: false, error: 'GITHUB_CLIENT_ID not configured' });
@@ -93,7 +93,7 @@ app.get('/api/auth/callback', async (req, res) => {
 });
 app.get('/api/auth/me', (req, res) => res.json({ user: (req as any).user || null, publicRead: String(process.env.PUBLIC_READ || 'false') }));
 app.post('/api/auth/logout', (_req, res) => { res.setHeader('Set-Cookie', 'excalidrop_token=; Path=/; Max-Age=0'); res.json({ success: true }); });
-// Writes always authed (when OAuth configured); reads public iff PUBLIC_READ=true.
+
 const OPEN_WRITE_PATHS = new Set(['/api/export/image/result', '/api/viewport/result']);
 app.use('/api/', (req, res, next) => {
   if (req.path.startsWith('/auth')) return next();
@@ -106,17 +106,17 @@ app.use('/api/', (req, res, next) => {
 });
 const persist = () => schedulePersist();
 
-// Serve static files from the build directory
+
 const staticDir = path.join(__dirname, '../dist');
 app.use(express.static(staticDir));
-// Also serve frontend assets
+
 app.use(express.static(path.join(__dirname, '../dist/frontend')));
-// Serve Excalidraw fonts so the font subsetting worker can fetch them for export
+
 app.use('/assets/fonts', express.static(
   path.join(__dirname, '../node_modules/@excalidraw/excalidraw/dist/prod/fonts')
 ));
 
-// WebSocket connections
+
 const clients = new Set<WebSocket>();
 
 // Broadcast to all connected clients

@@ -1,9 +1,4 @@
-/**
- * Static-viewer GitHub sync. Zero config on *.github.io:
- * owner/repo are derived from the URL, token comes from
- * localStorage (pasted PAT or agent handoff via #token=...).
- * Device-flow login needs VITE_GITHUB_CLIENT_ID (one-time OAuth App setup).
- */
+
 
 export interface RepoRef { owner: string; repo: string; branch: string }
 
@@ -24,7 +19,7 @@ export function detectRepo(): RepoRef | null {
 const TOKEN_KEY = 'excalidrop_gh_token';
 
 export function getToken(): string | null {
-  // Agent handoff: https://<site>/#token=gho_...
+
   if (window.location.hash.startsWith('#token=')) {
     const t = decodeURIComponent(window.location.hash.slice('#token='.length));
     if (t) {
@@ -55,7 +50,7 @@ async function gh(path: string, token: string, init?: RequestInit): Promise<any>
   return r.json();
 }
 
-/** Push scene JSON straight to the branch (viewer copy = source of truth for static mode). */
+
 export async function pushScene(
   ref: RepoRef, token: string, scene: { elements: unknown[]; files?: Record<string, unknown> },
 ): Promise<string> {
@@ -64,7 +59,7 @@ export async function pushScene(
   try {
     const cur = await gh(`/repos/${ref.owner}/${ref.repo}/contents/${path}?ref=${ref.branch}`, token);
     sha = cur.sha;
-  } catch { /* new file */ }
+  } catch {}
   const body: any = {
     message: `excalidrop: autosync ${scene.elements.length} elements`,
     content: btoa(unescape(encodeURIComponent(JSON.stringify(
@@ -81,7 +76,7 @@ export async function pushScene(
   return out.content.sha as string;
 }
 
-/** Load the static scene copy (no auth needed for public repos). */
+
 export async function loadStaticScene(): Promise<{ elements: any[]; files?: Record<string, unknown> }> {
   const r = await fetch('./canvas.excalidraw', { cache: 'no-cache' });
   if (!r.ok) throw new Error(`scene fetch ${r.status}`);
@@ -89,11 +84,7 @@ export async function loadStaticScene(): Promise<{ elements: any[]; files?: Reco
   return { elements: j.elements || [], files: j.files || {} };
 }
 
-/** Device-flow login. Returns {userCode, verificationUri} — the token
- *  polling step may be CORS-blocked on static hosting, so the agent can
- *  complete it instead (github_login tool) and hand back a #token= link.
- *  NOTE: no `scope` — GitHub App user-tokens use fine-grained permissions
- *  (user ∩ app), never scopes. */
+
 export async function startDeviceFlow(clientId: string): Promise<{ user_code: string; verification_uri: string }> {
   const r = await fetch('https://github.com/login/device/code', {
     method: 'POST',
@@ -105,6 +96,92 @@ export async function startDeviceFlow(clientId: string): Promise<{ user_code: st
   return { user_code: j.user_code, verification_uri: j.verification_uri };
 }
 
+export interface DeviceFlowSession {
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  interval: number;
+
+  expires_at: number;
+}
+
+const FLOW_KEY = 'excalidrop_device_flow';
+
+
+export async function startDeviceFlowFull(clientId: string): Promise<DeviceFlowSession> {
+  const r = await fetch('https://github.com/login/device/code', {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ client_id: clientId }),
+  });
+  if (!r.ok) throw new Error('device flow start failed');
+  const j = await r.json();
+  return {
+    device_code: j.device_code as string,
+    user_code: j.user_code as string,
+    verification_uri: (j.verification_uri as string) || 'https://github.com/login/device',
+    interval: Number(j.interval) || 5,
+    expires_at: Date.now() + (Number(j.expires_in) || 900) * 1000,
+  };
+}
+
+
+export async function pollDeviceToken(
+  clientId: string,
+  session: Pick<DeviceFlowSession, 'device_code' | 'interval' | 'expires_at'>,
+  signal?: AbortSignal,
+): Promise<string> {
+  let interval = session.interval;
+  for (;;) {
+    if (signal?.aborted) throw new DOMException('Login cancelled', 'AbortError');
+    if (Date.now() >= session.expires_at) throw new Error('Login code expired — please try again.');
+    await new Promise((r) => setTimeout(r, interval * 1000));
+    if (signal?.aborted) throw new DOMException('Login cancelled', 'AbortError');
+    const r = await fetch('https://github.com/login/oauth/access_token', {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_id: clientId,
+        device_code: session.device_code,
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+      }),
+    });
+    if (!r.ok) throw new Error('Login polling failed');
+    const j = await r.json();
+    if (j.access_token) return j.access_token as string;
+    if (j.error === 'authorization_pending') continue;
+    if (j.error === 'slow_down') {
+      interval += 5;
+      continue;
+    }
+    if (j.error) throw new Error(j.error_description || j.error);
+  }
+}
+
+export function saveFlowSession(s: DeviceFlowSession | null): void {
+  try {
+    if (s) sessionStorage.setItem(FLOW_KEY, JSON.stringify(s));
+    else sessionStorage.removeItem(FLOW_KEY);
+  } catch {
+
+  }
+}
+
+export function loadFlowSession(): DeviceFlowSession | null {
+  try {
+    const raw = sessionStorage.getItem(FLOW_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw) as DeviceFlowSession;
+    if (!s.device_code || Date.now() >= s.expires_at) {
+      sessionStorage.removeItem(FLOW_KEY);
+      return null;
+    }
+    return s;
+  } catch {
+    return null;
+  }
+}
+
 export type Access = 'editor' | 'viewer' | 'denied';
 
 export type AccessDetail =
@@ -113,19 +190,12 @@ export type AccessDetail =
   | 'no-token-permissions' // classic token with no read access to the repo
   | null; // editor/viewer — no problem to report
 
-/** What can this token do on this repo? Reads the user's app installations —
- *  the token only reaches repos both the user AND the app can access, so this
- *  mirrors GitHub's own enforcement (repo access == canvas access).
- *  `detail` tells the UI *why* access was denied so the login modal can
- *  point at the right fix (install the app vs. add this repo to the install). */
+
 export async function checkAccess(ref: RepoRef, token: string): Promise<{ access: Access; login: string; detail: AccessDetail }> {
   const me = await gh('/user', token);
   const login = (me.login || '') as string;
   const wanted = `${ref.owner}/${ref.repo}`.toLowerCase();
-  // Path 1: GitHub App user-token (ghu_) — installations list the repos it reaches.
-  // Classic PATs/OAuth tokens get 403 here ("must authenticate with an access
-  // token authorized to a GitHub App") and fall through to Path 2.
-  // per_page=100: without it a user with many repos can miss the hit (p.30 default).
+
   const inst = await gh('/user/installations?per_page=100', token).catch(() => null);
   if (inst?.installations) {
     if ((inst.installations as unknown[]).length === 0) {
@@ -135,10 +205,7 @@ export async function checkAccess(ref: RepoRef, token: string): Promise<{ access
       const repos = await gh(`/user/installations/${(i as any).id}/repositories?per_page=100`, token).catch(() => null);
       const hit = (repos?.repositories || []).find((r: any) => r.full_name.toLowerCase() === wanted);
       if (hit) {
-        // Token reaches the repo. Resolve read vs write via the collaborator
-        // permission endpoint; if that probe fails, start optimistic-editor —
-        // the Contents API is the real enforcement and a 403 push demotes to
-        // viewer (fail-open UI, fail-closed API).
+
         const perms = await gh(`/repos/${ref.owner}/${ref.repo}/collaborators/${login}/permission`, token).catch(() => null);
         const p = (perms?.permission || '') as string;
         if (p === 'read' || p === 'triage') return { access: 'viewer', login, detail: null };
@@ -147,7 +214,7 @@ export async function checkAccess(ref: RepoRef, token: string): Promise<{ access
     }
     return { access: 'denied', login, detail: 'repo-not-covered' };
   }
-  // Path 2: classic token — the repo endpoint echoes *this token's* permissions.
+
   const repo = await gh(`/repos/${ref.owner}/${ref.repo}`, token).catch(() => null);
   if (!repo?.permissions) return { access: 'denied', login, detail: 'no-token-permissions' };
   if (repo.permissions.push || repo.permissions.admin || repo.permissions.maintain) {
@@ -156,16 +223,12 @@ export async function checkAccess(ref: RepoRef, token: string): Promise<{ access
   return { access: 'viewer', login, detail: null };
 }
 
-/**
- * Shared GitHub App (one app, many installs — any user installs it on their
- * own repo; the Client ID is public, not a secret). Overridable at publish
- * time via VITE_GITHUB_CLIENT_ID / VITE_GITHUB_APP_SLUG.
- */
+
 export const CLIENT_ID =
   ((import.meta as any).env?.VITE_GITHUB_CLIENT_ID as string | undefined) ||
-  'Iv23liuS2fx3QOEIoDmx'; // shared Excalidrop GitHub App (public ID, not a secret)
+  'Iv23liuS2fx3QOEIoDmx';
 export const APP_SLUG =
   ((import.meta as any).env?.VITE_GITHUB_APP_SLUG as string | undefined) || 'excalidrop';
 export const APP_INSTALL_URL = `https://github.com/apps/${APP_SLUG}/installations/new`;
-/** True when a real Client ID is baked in (not the publish-time placeholder). */
+
 export const HAS_CLIENT_ID = !!CLIENT_ID && !CLIENT_ID.includes('EXCALIDROP_APP');

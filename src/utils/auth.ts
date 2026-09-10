@@ -41,7 +41,7 @@ export function authOptional(req: Request, _res: Response, next: NextFunction) {
   next();
 }
 
-/** Writes always require auth when GitHub OAuth is configured. Reads are public iff PUBLIC_READ=true. */
+
 export function requireWriteAuth(req: Request, res: Response, next: NextFunction) {
   if (!process.env.GITHUB_CLIENT_ID) return next(); // local dev: open
   const tok = getToken(req);
