@@ -323,6 +323,7 @@ function App(): JSX.Element {
   const [access, setAccess] = useState<'unknown' | 'editor' | 'viewer' | 'denied'>('unknown')
   const [ghLogin, setGhLogin] = useState<string>('')
   const [ghRepo, setGhRepo] = useState<import('./utils/ghSync').RepoRef | null>(null)
+  const [accessDetail, setAccessDetail] = useState<import('./utils/ghSync').AccessDetail>(null)
   const [ghDirty, setGhDirty] = useState<boolean>(false)
   const ghShaRef = useRef<string | null>(null)
   const ghPushInFlightRef = useRef<boolean>(false)
@@ -351,17 +352,19 @@ function App(): JSX.Element {
   // permissions change, so never cache the verdict in localStorage)
   useEffect(() => {
     if (serverMode || !ghRepo) return
-    if (!ghToken) { setAccess('denied'); setGhLogin(''); return }
+    if (!ghToken) { setAccess('denied'); setGhLogin(''); setAccessDetail(null); return }
     setAccess('unknown')
     void (async () => {
       try {
         const gh = await import('./utils/ghSync')
-        const { access: a, login } = await gh.checkAccess(ghRepo, ghToken)
+        const { access: a, login, detail } = await gh.checkAccess(ghRepo, ghToken)
         setAccess(a)
         setGhLogin(login)
+        setAccessDetail(detail)
       } catch {
         setAccess('denied')
         setGhLogin('')
+        setAccessDetail(null)
       }
     })()
   }, [serverMode, ghToken, ghRepo])
@@ -425,8 +428,9 @@ function App(): JSX.Element {
       if (String((error as Error).message).includes('403') && ghRepo && ghToken) {
         try {
           const gh = await import('./utils/ghSync')
-          const { access: a } = await gh.checkAccess(ghRepo, ghToken)
+          const { access: a, detail } = await gh.checkAccess(ghRepo, ghToken)
           setAccess(a)
+          setAccessDetail(detail)
         } catch { setAccess('viewer') }
       }
       if (!isClosing) setSyncStatus('error')
@@ -1036,7 +1040,15 @@ function App(): JSX.Element {
       {showLogin && !serverMode && (
         <div className="login-modal">
           <h3>Login with GitHub</h3>
-          <p>First time on this repo? <a href={APP_INSTALL_URL} target="_blank" rel="noreferrer">Install the Excalidrop app</a> on it — repo access is canvas access.</p>
+          {accessDetail === 'repo-not-covered' && ghLogin && (
+            <p><b>Almost there, {ghLogin}:</b> the app is installed on your account but <b>this repo isn't included</b>. Open your <a href={`https://github.com/settings/installations`} target="_blank" rel="noreferrer">app installations</a>, pick Excalidrop → Configure → add <code>{ghRepo?.owner}/{ghRepo?.repo}</code> (or switch to All repositories), then close and reopen this login.</p>
+          )}
+          {accessDetail === 'app-not-installed' && (
+            <p>First time on this repo? <a href={APP_INSTALL_URL} target="_blank" rel="noreferrer">Install the Excalidrop app</a> on it — repo access is canvas access.</p>
+          )}
+          {accessDetail !== 'repo-not-covered' && accessDetail !== 'app-not-installed' && (
+            <p>First time on this repo? <a href={APP_INSTALL_URL} target="_blank" rel="noreferrer">Install the Excalidrop app</a> on it — repo access is canvas access.</p>
+          )}
           <p><b>Easiest:</b> ask your agent to run <code>github_login</code> for this site — it shows a code, you approve it (2FA via GitHub), and this page unlocks. No copy-paste.</p>
           <details>
             <summary>Or paste a token manually</summary>

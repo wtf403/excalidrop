@@ -107,20 +107,32 @@ export async function startDeviceFlow(clientId: string): Promise<{ user_code: st
 
 export type Access = 'editor' | 'viewer' | 'denied';
 
+export type AccessDetail =
+  | 'app-not-installed' // ghu_ token, but the user has no app installation reaching this repo
+  | 'repo-not-covered' // installation(s) exist, but none of them include this repo
+  | 'no-token-permissions' // classic token with no read access to the repo
+  | null; // editor/viewer — no problem to report
+
 /** What can this token do on this repo? Reads the user's app installations —
  *  the token only reaches repos both the user AND the app can access, so this
- *  mirrors GitHub's own enforcement (repo access == canvas access). */
-export async function checkAccess(ref: RepoRef, token: string): Promise<{ access: Access; login: string }> {
+ *  mirrors GitHub's own enforcement (repo access == canvas access).
+ *  `detail` tells the UI *why* access was denied so the login modal can
+ *  point at the right fix (install the app vs. add this repo to the install). */
+export async function checkAccess(ref: RepoRef, token: string): Promise<{ access: Access; login: string; detail: AccessDetail }> {
   const me = await gh('/user', token);
   const login = (me.login || '') as string;
   const wanted = `${ref.owner}/${ref.repo}`.toLowerCase();
   // Path 1: GitHub App user-token (ghu_) — installations list the repos it reaches.
   // Classic PATs/OAuth tokens get 403 here ("must authenticate with an access
   // token authorized to a GitHub App") and fall through to Path 2.
-  const inst = await gh('/user/installations', token).catch(() => null);
+  // per_page=100: without it a user with many repos can miss the hit (p.30 default).
+  const inst = await gh('/user/installations?per_page=100', token).catch(() => null);
   if (inst?.installations) {
+    if ((inst.installations as unknown[]).length === 0) {
+      return { access: 'denied', login, detail: 'app-not-installed' };
+    }
     for (const i of inst.installations || []) {
-      const repos = await gh(`/user/installations/${i.id}/repositories`, token).catch(() => null);
+      const repos = await gh(`/user/installations/${(i as any).id}/repositories?per_page=100`, token).catch(() => null);
       const hit = (repos?.repositories || []).find((r: any) => r.full_name.toLowerCase() === wanted);
       if (hit) {
         // Token reaches the repo. Resolve read vs write via the collaborator
@@ -129,19 +141,19 @@ export async function checkAccess(ref: RepoRef, token: string): Promise<{ access
         // viewer (fail-open UI, fail-closed API).
         const perms = await gh(`/repos/${ref.owner}/${ref.repo}/collaborators/${login}/permission`, token).catch(() => null);
         const p = (perms?.permission || '') as string;
-        if (p === 'read' || p === 'triage') return { access: 'viewer', login };
-        return { access: 'editor', login };
+        if (p === 'read' || p === 'triage') return { access: 'viewer', login, detail: null };
+        return { access: 'editor', login, detail: null };
       }
     }
-    return { access: 'denied', login };
+    return { access: 'denied', login, detail: 'repo-not-covered' };
   }
   // Path 2: classic token — the repo endpoint echoes *this token's* permissions.
   const repo = await gh(`/repos/${ref.owner}/${ref.repo}`, token).catch(() => null);
-  if (!repo?.permissions) return { access: 'denied', login };
+  if (!repo?.permissions) return { access: 'denied', login, detail: 'no-token-permissions' };
   if (repo.permissions.push || repo.permissions.admin || repo.permissions.maintain) {
-    return { access: 'editor', login };
+    return { access: 'editor', login, detail: null };
   }
-  return { access: 'viewer', login };
+  return { access: 'viewer', login, detail: null };
 }
 
 /**
