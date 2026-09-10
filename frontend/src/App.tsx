@@ -14,7 +14,7 @@ import type { MermaidConfig } from '@excalidraw/mermaid-to-excalidraw'
 import { APP_INSTALL_URL } from './utils/ghSync'
 import { registerCanvasWebMCP } from './utils/webmcp'
 
-// Type definitions
+
 type ExcalidrawAPIRefValue = ExcalidrawImperativeAPI;
 
 interface ServerElement {
@@ -44,13 +44,13 @@ interface ServerElement {
   boundElements?: any[] | null;
   containerId?: string | null;
   locked?: boolean;
-  // Arrow element binding
+
   start?: { id: string };
   end?: { id: string };
   strokeStyle?: string;
   endArrowhead?: string;
   startArrowhead?: string;
-  // Image element fields
+
   fileId?: string;
   status?: string;
   scale?: [number, number];
@@ -87,7 +87,7 @@ const authHeaders = (): Record<string, string> => {
 };
 const AUTO_SYNC_DEBOUNCE_MS = 1200;
 
-// Helper function to clean elements for Excalidraw
+
 const cleanElementForExcalidraw = (element: ServerElement): Partial<ExcalidrawElement> => {
   const {
     createdAt,
@@ -101,46 +101,35 @@ const cleanElementForExcalidraw = (element: ServerElement): Partial<ExcalidrawEl
   return cleanElement;
 }
 
-// Helper function to validate and fix element binding data
 const validateAndFixBindings = (elements: Partial<ExcalidrawElement>[]): Partial<ExcalidrawElement>[] => {
   const elementMap = new Map(elements.map(el => [el.id!, el]));
 
   return elements.map(element => {
     const fixedElement = { ...element };
 
-    // Validate and fix boundElements
-    if (fixedElement.boundElements) {
       if (Array.isArray(fixedElement.boundElements)) {
         fixedElement.boundElements = fixedElement.boundElements.filter((binding: any) => {
-          // Ensure binding has required properties
           if (!binding || typeof binding !== 'object') return false;
           if (!binding.id || !binding.type) return false;
 
-          // Ensure the referenced element exists
           const referencedElement = elementMap.get(binding.id);
           if (!referencedElement) return false;
 
-          // Validate binding type
           if (!['text', 'arrow'].includes(binding.type)) return false;
 
           return true;
         });
 
-        // Remove boundElements if empty
         if (fixedElement.boundElements.length === 0) {
           fixedElement.boundElements = null;
         }
       } else {
-        // Invalid boundElements format, set to null
         fixedElement.boundElements = null;
       }
     }
 
-    // Validate and fix containerId
     if (fixedElement.containerId) {
-      const containerElement = elementMap.get(fixedElement.containerId);
       if (!containerElement) {
-        // Container doesn't exist, remove containerId
         fixedElement.containerId = null;
       }
     }
@@ -223,7 +212,6 @@ const normalizeImageElement = (element: Partial<ExcalidrawElement>): Partial<Exc
   }
 }
 
-// Helper: restore startBinding/endBinding/boundElements after convertToExcalidrawElements strips them
 const restoreBindings = (
   convertedElements: readonly any[],
   originalElements: Partial<ExcalidrawElement>[]
@@ -264,8 +252,6 @@ const convertElementsPreservingImageProps = (
   const validatedElements = validateAndFixBindings(elements)
   const imageElements = validatedElements.filter(isImageElement).map(normalizeImageElement)
   const nonImageElements = validatedElements.filter(el => !isImageElement(el))
-  // convertToExcalidrawElements may expand labeled shapes into [shape, textElement],
-  // so we cannot assume a 1:1 mapping — return all converted elements directly.
   const convertedNonImageElements = convertToExcalidrawElements(nonImageElements as any, { regenerateIds: false })
   const restoredNonImageElements = restoreBindings(convertedNonImageElements, nonImageElements)
   return recenterBoundShapeTextElements([...restoredNonImageElements, ...imageElements])
@@ -273,14 +259,10 @@ const convertElementsPreservingImageProps = (
 
 function App(): JSX.Element {
   const [excalidrawAPI, setExcalidrawAPI] = useState<ExcalidrawAPIRefValue | null>(null)
-  // Ref so WS message handlers (captured in stale closures) always see the latest API instance
   const excalidrawAPIRef = useRef<ExcalidrawAPIRefValue | null>(null)
   useEffect(() => {
     excalidrawAPIRef.current = excalidrawAPI
   }, [excalidrawAPI])
-
-  // Thin WebMCP layer: expose the live in-tab canvas as browser-native tools
-  // (document.modelContext). No-op where the API is absent. Cleanup unregisters.
   useEffect(() => {
     if (!excalidrawAPI) return
     const handle = registerCanvasWebMCP(() => excalidrawAPIRef.current)
@@ -298,7 +280,6 @@ function App(): JSX.Element {
   const userInteractedRef = useRef<boolean>(false)
 
   const applySceneUpdateWithoutAutoSync = (
-    api: ExcalidrawImperativeAPI,
     scene: Parameters<ExcalidrawImperativeAPI['updateScene']>[0]
   ): void => {
     suppressAutoSyncCountRef.current += 1
@@ -316,10 +297,8 @@ function App(): JSX.Element {
     }
   }, [])
 
-  // Static (GitHub Pages) vs server mode detection
   const [serverMode, setServerMode] = useState<boolean>(false)
   const [ghToken, setGhToken] = useState<string | null>(null)
-  // Canvas access = repo access (checked against the user's app installations)
   const [access, setAccess] = useState<'unknown' | 'editor' | 'viewer' | 'denied'>('unknown')
   const [ghLogin, setGhLogin] = useState<string>('')
   const [ghRepo, setGhRepo] = useState<import('./utils/ghSync').RepoRef | null>(null)
@@ -328,7 +307,6 @@ function App(): JSX.Element {
   const ghShaRef = useRef<string | null>(null)
   const ghPushInFlightRef = useRef<boolean>(false)
 
-  // WebSocket connection (server mode only)
   useEffect(() => {
     fetch('/api/health', { headers: authHeaders() }).then(r => {
       if (r.ok) { setServerMode(true); connectWebSocket() }
@@ -348,8 +326,6 @@ function App(): JSX.Element {
     setGhToken(gh.getToken())
   }
 
-  // Resolve canvas access whenever identity or repo changes (in-memory only —
-  // permissions change, so never cache the verdict in localStorage)
   useEffect(() => {
     if (serverMode || !ghRepo) return
     if (!ghToken) { setAccess('denied'); setGhLogin(''); setAccessDetail(null); return }
@@ -369,7 +345,6 @@ function App(): JSX.Element {
     })()
   }, [serverMode, ghToken, ghRepo])
 
-  // 10s GitHub autosync + force-save on page hide/close (static mode)
   useEffect(() => {
     if (serverMode) return
     const id = setInterval(() => { void pushToGitHub(false) }, 10000)
@@ -391,7 +366,7 @@ function App(): JSX.Element {
 
   const pushToGitHub = async (isClosing: boolean): Promise<void> => {
     if (serverMode || !excalidrawAPI || !ghToken || !ghRepo) return
-    if (access !== 'editor') return // viewers/denied never push; API would 403 anyway
+    if (access !== 'editor') return
     if ((!ghDirty && !isClosing) || ghPushInFlightRef.current) return
     ghPushInFlightRef.current = true
     if (!isClosing) setSyncStatus('syncing')
@@ -424,7 +399,6 @@ function App(): JSX.Element {
       setGhDirty(false)
     } catch (error) {
       console.error('GitHub push failed:', error)
-      // Access pulled mid-session? Re-check once and demote instead of retry-looping.
       if (String((error as Error).message).includes('403') && ghRepo && ghToken) {
         try {
           const gh = await import('./utils/ghSync')
@@ -439,12 +413,10 @@ function App(): JSX.Element {
     }
   }
 
-  // Load existing elements when Excalidraw API becomes available
   useEffect(() => {
     if (excalidrawAPI) {
       loadExistingElements()
 
-      // Ensure WebSocket is connected for real-time updates
       if (!isConnected) {
         connectWebSocket()
       }
@@ -453,7 +425,6 @@ function App(): JSX.Element {
 
   const loadExistingElements = async (): Promise<void> => {
     try {
-      // Server mode (local dev): canonical API
       const response = await fetch('/api/elements', { headers: authHeaders() }).catch(() => null)
       if (response?.ok) {
         const result: ApiResponse = await response.json()
@@ -476,7 +447,6 @@ function App(): JSX.Element {
         }
         return
       }
-      // Static mode (GitHub Pages): scene copy next to index.html, no auth needed
       const gh = await import('./utils/ghSync')
       const scene = await gh.loadStaticScene()
       if (scene.elements.length > 0 && excalidrawAPI) {
@@ -1008,10 +978,16 @@ function App(): JSX.Element {
       setShowLogin(false)
       return
     }
-    // No pasted token: device flow must be completed by the agent — browsers
-    // can't reach github.com/login/* (no CORS headers, verified). Show the
-    // handoff state directly instead of a failing fetch.
-    setDeviceInfo({ user_code: 'ASK-YOUR-AGENT', verification_uri: 'ask the agent to run the github_login tool' })
+    // Try device flow — if CORS blocks it, fall back to agent handoff message
+    try {
+      const flow = await gh.startDeviceFlow(gh.CLIENT_ID)
+      setDeviceInfo({ user_code: flow.user_code, verification_uri: flow.verification_uri })
+      // Open the verification URL in a new tab
+      window.open(flow.verification_uri, '_blank')
+    } catch (err) {
+      console.warn('Device flow blocked by CORS, showing agent handoff:', err)
+      setDeviceInfo({ user_code: 'ASK-YOUR-AGENT', verification_uri: 'ask the agent to run the github_login tool' })
+    }
   }
 
   return (
@@ -1064,7 +1040,14 @@ function App(): JSX.Element {
           <div className="login-row">
             <button className="btn-secondary" onClick={() => { setShowLogin(false); setDeviceInfo(null) }}>Close</button>
           </div>
-          {deviceInfo && (
+          {deviceInfo && deviceInfo.user_code !== 'ASK-YOUR-AGENT' && (
+            <div style={{ background: '#f0f0f0', padding: '12px', borderRadius: '8px', marginTop: '8px' }}>
+              <p style={{ margin: '0 0 8px 0' }}><b>Device Flow Started:</b></p>
+              <p style={{ margin: '0 0 8px 0' }}>Open <a href={deviceInfo.verification_uri} target="_blank" rel="noreferrer">{deviceInfo.verification_uri}</a> and enter code:</p>
+              <p style={{ margin: '0', fontSize: '20px', fontWeight: 'bold', fontFamily: 'monospace', letterSpacing: '2px' }}>{deviceInfo.user_code}</p>
+            </div>
+          )}
+          {deviceInfo && deviceInfo.user_code === 'ASK-YOUR-AGENT' && (
             <p>Ask your agent to run <code>github_login</code> for this site.</p>
           )}
         </div>
