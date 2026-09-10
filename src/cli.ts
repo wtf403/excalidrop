@@ -41,6 +41,8 @@ const PORT_SCAN_SIZE = 200;
 interface DropConfig {
   port: number;
   canvasUrl: string;
+  /** Remembered remote canvas (owner/repo) — MCP auto-loads it, agents skip switch_remote. */
+  remote?: string;
 }
 
 // ─── port utils ──────────────────────────────────────────────────────────────
@@ -148,7 +150,7 @@ function mcpServerJson(): Record<string, unknown> {
     mcpServers: {
       excalidrop: {
         command: 'npx',
-        args: ['-y', 'excalidrop', 'mcp'],
+        args: ['excalidrop', 'mcp'],
       },
     },
   };
@@ -158,19 +160,19 @@ function agentCommands(): { name: string; command: string }[] {
   return [
     {
       name: 'Claude Code (project scope)',
-      command: 'claude mcp add excalidrop --scope project -- npx -y excalidrop mcp',
+      command: 'claude mcp add excalidrop --scope project -- npx excalidrop mcp',
     },
     {
       name: 'Claude Code (user scope)',
-      command: 'claude mcp add excalidraw --scope user -- npx -y excalidrop mcp',
+      command: 'claude mcp add excalidraw --scope user -- npx excalidrop mcp',
     },
     {
       name: 'Codex CLI',
-      command: 'codex mcp add excalidrop -- npx -y excalidrop mcp',
+      command: 'codex mcp add excalidrop -- npx excalidrop mcp',
     },
     {
       name: 'Gemini CLI',
-      command: 'gemini mcp add excalidrop npx -y excalidrop mcp',
+      command: 'gemini mcp add excalidrop npx excalidrop mcp',
     },
     {
       name: 'Cursor (.cursor/mcp.json) / Claude Desktop / Antigravity',
@@ -184,7 +186,7 @@ function agentCommands(): { name: string; command: string }[] {
           mcp: {
             excalidrop: {
               type: 'local',
-              command: ['npx', '-y', 'excalidrop', 'mcp'],
+              command: ['npx', 'excalidrop', 'mcp'],
               enabled: true,
             },
           },
@@ -216,16 +218,33 @@ function commandExists(cmd: string): boolean {
 
 // ─── commands ────────────────────────────────────────────────────────────────
 
+function detectSlug(): string {
+  try {
+    const url = spawnSync('git', ['config', '--get', 'remote.origin.url'], { encoding: 'utf8' }).stdout.trim().replace(/\.git$/, '');
+    return url.match(/github\.com[:/](.+)/)?.[1] || '';
+  } catch { return ''; }
+}
+
+function ghAuthed(): boolean {
+  return spawnSync('gh', ['auth', 'status'], { stdio: 'ignore' }).status === 0;
+}
+
 async function cmdInit(args: string[]): Promise<void> {
   const portFlag = args.find((a) => a.startsWith('--port='));
   const preferred = portFlag ? Number(portFlag.split('=')[1]) : undefined;
   const noPrompt = args.includes('--no-prompt') || args.includes('-y');
   const root = findProjectRoot(process.cwd());
+  const slug = detectSlug();
 
   const port = await findFreePort(preferred);
-  const config: DropConfig = { port, canvasUrl: `http://127.0.0.1:${port}` };
+  // Preselect this repo as the remote canvas: the MCP auto-loads it, so the
+  // agent never needs switch_remote for its home project (chrome-devtools-mcp
+  // wrapper pattern: in-memory default + persisted startup target — ours
+  // persists in .excalidrop.json so it survives restarts too).
+  const config: DropConfig = { port, canvasUrl: `http://127.0.0.1:${port}`, ...(slug ? { remote: slug } : {}) };
   fs.writeFileSync(path.join(root, CONFIG_NAME), JSON.stringify(config, null, 2) + '\n');
   console.log(`\nexcalidrop: canvas port ${port} saved to ${path.join(root, CONFIG_NAME)}`);
+  if (slug) console.log(`excalidrop: remote canvas preselected: ${slug} (agent uses it automatically)`);
 
   // Seed canvas.excalidraw so `npm i -D excalidrop` leaves a visible file
   // that export_scene/import_scene round-trip through.
@@ -249,7 +268,7 @@ async function cmdInit(args: string[]): Promise<void> {
     }
   }
   if (!mcp.mcpServers || typeof mcp.mcpServers !== 'object') mcp.mcpServers = {};
-  mcp.mcpServers.excalidrop = { command: 'npx', args: ['-y', 'excalidrop', 'mcp'] };
+  mcp.mcpServers.excalidrop = { command: 'npx', args: ['excalidrop', 'mcp'] };
   if (Object.keys(mcp).length > 0) {
     fs.writeFileSync(mcpPath, JSON.stringify(mcp, null, 2) + '\n');
     console.log(`excalidrop: MCP server entry written to ${mcpPath}`);
@@ -263,6 +282,26 @@ async function cmdInit(args: string[]): Promise<void> {
     return;
   }
 
+  // Guided remote setup: gh auth → publish empty canvas → agent install → login
+  if (slug) {
+    if (!ghAuthed()) {
+      console.log('GitHub: not logged in. Run `gh auth login` first (2FA via GitHub), then re-run init.\n');
+    } else {
+      const pub = await prompt(`Publish an empty canvas to ${slug} (creates gh-pages + enables Pages)? [Y/n] `);
+      if (!pub || /^(y|yes)$/i.test(pub)) {
+        const r = spawnSync('bash', [path.join(__dirname, '../scripts/publish-pages.sh')], {
+          stdio: 'inherit', env: { ...process.env, REPO_SLUG: slug },
+        });
+        if (r.status === 0) {
+          const [owner, repo] = slug.split('/');
+          console.log(`\nCanvas live at https://${owner}.github.io/${repo}/`);
+          const appSlug = process.env.EXCALIDROP_APP_SLUG || 'excalidrop';
+          console.log(`Install the app once per repo: https://github.com/apps/${appSlug}/installations/new`);
+        }
+      }
+    }
+  }
+
   const answer = await prompt('Install the excalidrop MCP server into your AI agent now? [Y/n] ');
   if (answer && !/^(y|yes)$/i.test(answer)) {
     printAgentCommands();
@@ -274,7 +313,7 @@ async function cmdInit(args: string[]): Promise<void> {
   if (commandExists('claude')) {
     const scopeAnswer = await prompt('Claude Code scope? [project/user] (default: project) ');
     const scope = /user/i.test(scopeAnswer) ? 'user' : 'project';
-    const r = spawnSync('claude', ['mcp', 'add', 'excalidrop', '--scope', scope, '--', 'npx', '-y', 'excalidrop', 'mcp'], {
+    const r = spawnSync('claude', ['mcp', 'add', 'excalidrop', '--scope', scope, '--', 'npx', 'excalidrop', 'mcp'], {
       stdio: 'inherit',
     });
     installed = r.status === 0;
@@ -282,7 +321,7 @@ async function cmdInit(args: string[]): Promise<void> {
   if (!installed && commandExists('codex')) {
     const useIt = await prompt('Run `codex mcp add excalidrop`? [Y/n] ');
     if (!useIt || /^(y|yes)$/i.test(useIt)) {
-      const r = spawnSync('codex', ['mcp', 'add', 'excalidrop', '--', 'npx', '-y', 'excalidrop', 'mcp'], {
+      const r = spawnSync('codex', ['mcp', 'add', 'excalidrop', '--', 'npx', 'excalidrop', 'mcp'], {
         stdio: 'inherit',
       });
       installed = r.status === 0;
@@ -354,12 +393,112 @@ async function cmdStatus(): Promise<void> {
   }
 }
 
+async function cmdPages(_args: string[]): Promise<void> {
+  console.log(`excalidrop pages (GitHub as source of truth, no Actions, no setup)\n`);
+  console.log('1. Publish viewer: npx excalidrop publish');
+  console.log('   (uses `gh auth` — repo auto-detected, Pages auto-enabled.)\n');
+  console.log('2. In your agent: switch_remote { target: "<owner>.github.io/<repo>" }');
+  console.log('   Draw as usual — commits land on GitHub, viewer updates on gh-pages.\n');
+  console.log('3. Login: ask the agent to run github_login (device flow, 2FA via GitHub),');
+  console.log('   or paste a token (`gh auth token`) on the viewer login pill.\n');
+  console.log('Rule: never edit the canvas locally — the Pages site + GitHub repo are the canvas.');
+}
+
+function cmdRemote(): void {
+  const child = spawn(process.execPath, [path.join(__dirname, 'remote.js')], { stdio: 'inherit', env: process.env });
+  child.on('exit', (code) => process.exit(code ?? 0));
+}
+
+/** One-command per-user setup on ANY repo: gh auth → publish viewer → app install link. */
+async function cmdSetup(args: string[] = []): Promise<void> {
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log('Usage: npx excalidrop setup\n\nChecks `gh auth`, publishes the viewer to this repo\'s gh-pages\n(enabling Pages if needed), then prints the app-install link and next steps.');
+    return;
+  }
+  console.log('excalidrop setup — works on any repo you own or can access\n');
+  // 1. gh auth (the only prerequisite; 2FA enforced by GitHub itself)
+  const auth = spawnSync('gh', ['auth', 'status'], { stdio: 'pipe', encoding: 'utf8' });
+  if (auth.status !== 0) {
+    console.error('Not logged in to GitHub. Run this first:\n\n  gh auth login\n');
+    process.exit(1);
+  }
+  const slug = (() => {
+    try {
+      const url = spawnSync('git', ['config', '--get', 'remote.origin.url'], { encoding: 'utf8' }).stdout.trim().replace(/\.git$/, '');
+      const m = url.match(/github\.com[:/](.+)/);
+      return m?.[1] || '';
+    } catch { return ''; }
+  })();
+  if (!slug) {
+    console.error('No GitHub remote detected. Run setup inside a cloned repo.\n');
+    process.exit(1);
+  }
+  console.log(`Repo: ${slug} (detected from git remote)\n`);
+  // 2. publish viewer (auto-enables Pages, auto-syncs scene)
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn('bash', [path.join(__dirname, '../scripts/publish-pages.sh')], { stdio: 'inherit', env: { ...process.env, REPO_SLUG: slug } });
+    child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`publish failed (exit ${code})`))));
+  });
+  // 3. remember the target: agent auto-loads it, no switch_remote needed
+  try {
+    const cfgFile = path.join(process.cwd(), CONFIG_NAME);
+    const cfg = fs.existsSync(cfgFile) ? JSON.parse(fs.readFileSync(cfgFile, 'utf8')) : {};
+    fs.writeFileSync(cfgFile, JSON.stringify({ port: cfg.port || 3030, canvasUrl: cfg.canvasUrl || 'http://127.0.0.1:3030', ...cfg, remote: slug }, null, 2) + '\n');
+    console.log(`Remote target remembered in ${CONFIG_NAME} (agent uses it automatically).`);
+  } catch { /* non-fatal */ }
+  // 4. verify: Pages serves the viewer AND the scene file
+  const [sOwner, sRepo] = slug.split('/');
+  let verified = false;
+  for (let i = 0; i < 12; i++) {
+    await new Promise((r) => setTimeout(r, 10000));
+    try {
+      const res = await fetch(`https://${sOwner}.github.io/${sRepo}/canvas.excalidraw`, { signal: AbortSignal.timeout(15000) });
+      if (res.ok) { verified = true; break; }
+    } catch { /* Pages build still running */ }
+  }
+  console.log(verified ? 'Verified: viewer + scene live.' : 'Note: Pages still building — check back in a minute.');
+  // 4. next steps: install the shared app + draw
+  const appSlug = process.env.EXCALIDROP_APP_SLUG || 'excalidrop';
+  console.log(`\nDone. Your canvas: https://${sOwner}.github.io/${sRepo}/\n`);
+  console.log('Two remaining clicks (one time per repo):');
+  console.log(`  1. Install the Excalidrop app on this repo:\n     https://github.com/apps/${appSlug}/installations/new\n`);
+  console.log('  2. In your agent: switch_remote { target: "<that canvas URL>" }');
+  console.log('     then draw — commits land on GitHub, the viewer updates itself.');
+  console.log('\nLogin on the page: pill → device code → github.com/login/device (2FA via GitHub).');
+}
+
+/** Terminal GitHub login via device flow (same flow the agent's github_login uses). */
+async function cmdLogin(): Promise<void> {
+  const { APP_CLIENT_ID } = await import('./target.js');
+  const clientId = process.env.GITHUB_OAUTH_CLIENT_ID || APP_CLIENT_ID;
+  if (!clientId) {
+    console.error('No GitHub App Client ID configured yet.');
+    console.error('Set GITHUB_OAUTH_CLIENT_ID (or wait for the shared excalidrop app),');
+    console.error('or just run `gh auth login` — the MCP picks that token up automatically.');
+    process.exit(1);
+  }
+  // Dynamic import to avoid loading MCP deps in CLI path
+  const mod = await import('./target.js');
+  console.log('Starting GitHub device login…');
+  const dev = await mod.deviceStart(clientId);
+  console.log(`\nOpen ${dev.verification_uri} and enter code: ${dev.user_code}\n`);
+  const repoId = undefined; // unrestricted; pass --repo owner/repo? (future: parse argv)
+  const token = await mod.devicePoll(clientId, dev.device_code, dev.interval || 5, 300, repoId);
+  console.log('Logged in — token stored in ~/.config/excalidrop/gh_token');
+  void token;
+}
+
 function printHelp(): void {
   console.log(`excalidrop — drop an Excalidraw canvas + MCP server into any project
 
 Usage:
   npx excalidrop init [--port=N] [--no-prompt]  pick a free port, write .excalidrop.json + .mcp.json
   npx excalidrop up [--port=N]                  start this project's canvas server
+  npx excalidrop setup                        one-command setup on any repo (gh auth + publish + guide)
+  npx excalidrop login                        GitHub device-flow login from the terminal
+  npx excalidrop pages                        GitHub-truth + gh-pages publish guide
+  npx excalidrop remote                       run remote MCP-v2 (GitHub-backed, multi-project)
+  npx excalidrop publish                      publish viewer straight to gh-pages (no Actions)
   npx excalidrop mcp                            run MCP stdio server (used by AI agents)
   npx excalidrop status                         show port + canvas health
   npx excalidrop add                            print AI-agent install commands
@@ -388,6 +527,23 @@ async function main(): Promise<void> {
     case 'status':
       await cmdStatus();
       break;
+    case 'pages':
+      await cmdPages(rest);
+      break;
+    case 'remote':
+      cmdRemote();
+      break;
+    case 'setup':
+      await cmdSetup(rest);
+      break;
+    case 'login':
+      await cmdLogin();
+      break;
+    case 'publish': {
+      const child = spawn('bash', [path.join(__dirname, '../scripts/publish-pages.sh')], { stdio: 'inherit', env: process.env });
+      child.on('exit', (code) => process.exit(code ?? 0));
+      break;
+    }
     case 'add':
       printAgentCommands();
       break;

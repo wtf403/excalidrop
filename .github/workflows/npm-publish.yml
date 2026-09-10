@@ -16,8 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: packages/excalidrop
-    permissions:
+            permissions:
       contents: read
       id-token: write
 
@@ -31,7 +30,7 @@ jobs:
           node-version: '20.x'
           registry-url: 'https://registry.npmjs.org'
           cache: 'npm'
-          cache-dependency-path: packages/excalidrop/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -52,7 +51,7 @@ jobs:
 
       - name: Get package version
         id: package-version
-        run: echo "version=$(node -p "require('./packages/excalidrop/package.json').version")" >> $GITHUB_OUTPUT
+        run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
 
       - name: Check if version exists on NPM
         id: check-version
@@ -86,7 +85,7 @@ jobs:
       - name: Create GitHub Release Assets
         if: github.event_name == 'release'
         run: |
-          tar -czf excalidrop-${{ steps.package-version.outputs.version }}.tar.gz packages/excalidrop/dist/
+          tar -czf excalidrop-${{ steps.package-version.outputs.version }}.tar.gz dist/
 
       - name: Upload Release Assets
         if: github.event_name == 'release'

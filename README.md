@@ -15,8 +15,6 @@ Keywords: Excalidraw agent skill, Excalidraw MCP server, AI diagramming, Claude 
 
 ![MCP Excalidraw Demo](docs/demo.gif)
 
-*AI agent creates a complete architecture diagram from a single prompt (4x speed). [Watch full video on YouTube](https://youtu.be/ufW78Amq5qA)*
-
 ## Table of Contents
 
 - [Demo](#demo)
@@ -69,33 +67,22 @@ Excalidraw now has an [official MCP](https://github.com/excalidraw/excalidraw-mc
 
 **TL;DR** — The official MCP generates diagrams. We give AI agents a full canvas toolkit to build, inspect, and iteratively refine diagrams — including the ability to see what they drew.
 
-## What's New
-
-### v2.0 — Canvas Toolkit
-
-- 13 new MCP tools (26 total): `get_element`, `clear_canvas`, `export_scene`, `import_scene`, `export_to_image`, `duplicate_elements`, `snapshot_scene`, `restore_snapshot`, `describe_scene`, `get_canvas_screenshot`, `read_diagram_guide`, `export_to_excalidraw_url`, `set_viewport`
-- **Closed feedback loop**: AI can now inspect the canvas (`describe_scene`) and see it (`get_canvas_screenshot` returns an image) — enabling iterative refinement
-- **Design guide**: `read_diagram_guide` returns best-practice color palettes, sizing rules, layout patterns, and anti-patterns — dramatically improves AI-generated diagram quality
-- **Shareable URLs**: `export_to_excalidraw_url` encrypts and uploads the scene to excalidraw.com, returns a shareable link anyone can open
-- **Viewport control**: `set_viewport` with `scrollToContent`, `scrollToElementId`, or manual zoom/offset — agents can auto-fit diagrams after creation
-- **File I/O**: export/import full `.excalidraw` JSON files
-- **Snapshots**: save and restore named canvas states
-- **Skill fallback**: Agent skill auto-detects MCP vs REST API mode, gracefully falls back to HTTP endpoints when MCP server isn't configured
-- Fixed all previously known issues: `align_elements` / `distribute_elements` fully implemented, points type normalization, removed invalid `label` type, removed HTTP transport dead code, `ungroup_elements` now errors on failure
-
-### v1.x
-
-- Agent skill: `packages/excalidrop/skills/excalidraw-skill/` (portable instructions + helper scripts for export/import and repeatable CRUD)
-- Better testing loop: MCP Inspector CLI examples + browser screenshot checks (`agent-browser`)
-- Bugfixes: batch create now preserves element ids (fixes update/delete after batch); frontend entrypoint fixed (`main.tsx`)
-
-## Quick Start (excalidrop)
+## Quick Start
 
 ```bash
 npm i -D excalidrop
-npx excalidrop init   # picks a free port, writes .excalidrop.json + .mcp.json, offers AI-agent install
-npx excalidrop up     # start this project's canvas
+npx excalidrop setup  # gh auth check → publishes viewer to gh-pages → app-install link → verifies live
 ```
+
+`setup` walks you through the whole flow on **any repo you own or can access**:
+
+1. **Checks `gh auth`** (log in with `gh auth login` first — 2FA via GitHub).
+2. **Publishes an empty canvas** to your repo's `gh-pages` branch and enables Pages.
+3. **Prints the one-time app-install link** (`github.com/apps/<app>/installations/new`) — installing the GitHub App on the repo is what grants canvas access. Repo access == canvas access: collaborators with write can edit, readers get view-only, everyone else gets a login wall.
+4. **Verifies** the viewer + scene are actually serving.
+5. Prints your canvas URL. In your agent, run `switch_remote { target: "<that URL>" }` once — it's remembered per-project in `.excalidrop.json`, so subsequent sessions skip it and draw directly. Commits land on GitHub; the viewer updates itself. Human edits in the browser autosync every 10s with a force-save on close.
+
+Prefer local-only? `npx excalidrop init` (free port + agent install prompt) then `npx excalidrop up`.
 
 Each project gets its own port (scanned free from 3030), so several checkouts run concurrently. Agent config needs no hardcoded port — same pattern as `chrome-devtools-mcp`:
 
@@ -289,7 +276,7 @@ Config location: `~/.gemini/antigravity/mcp_config.json`
 
 ## Agent Skill (Optional)
 
-This repo includes a skill at `packages/excalidrop/skills/excalidraw-skill/` that provides:
+This repo includes a skill at `skills/excalidraw-skill/` that provides:
 
 - **Workflow playbook** (`SKILL.md`): step-by-step guidance for drawing, refining, and exporting diagrams
 - **Cheatsheet** (`references/cheatsheet.md`): MCP tool and REST API reference
@@ -301,7 +288,7 @@ The skill complements the MCP server by giving your AI agent structured workflow
 
 ```bash
 mkdir -p ~/.codex/skills
-cp -R packages/excalidrop/skills/excalidraw-skill ~/.codex/skills/excalidraw-skill
+cp -R skills/excalidraw-skill ~/.codex/skills/excalidraw-skill
 ```
 
 To update an existing installation, remove the old folder first (`rm -rf ~/.codex/skills/excalidraw-skill`) then re-copy.
@@ -311,13 +298,13 @@ To update an existing installation, remove the old folder first (`rm -rf ~/.code
 **User-level** (available across all your projects):
 ```bash
 mkdir -p ~/.claude/skills
-cp -R packages/excalidrop/skills/excalidraw-skill ~/.claude/skills/excalidraw-skill
+cp -R skills/excalidraw-skill ~/.claude/skills/excalidraw-skill
 ```
 
 **Project-level** (scoped to a specific project, can be committed to the repo):
 ```bash
 mkdir -p /path/to/your/project/.claude/skills
-cp -R packages/excalidrop/skills/excalidraw-skill /path/to/your/project/.claude/skills/excalidraw-skill
+cp -R skills/excalidraw-skill /path/to/your/project/.claude/skills/excalidraw-skill
 ```
 
 Then invoke the skill in Claude Code with `/excalidraw-skill`.
@@ -329,9 +316,9 @@ To update an existing installation, remove the old folder first then re-copy.
 All scripts respect `EXPRESS_SERVER_URL` (default `http://127.0.0.1:3000`) or accept `--url`.
 
 ```bash
-EXPRESS_SERVER_URL=http://127.0.0.1:3000 node packages/excalidrop/skills/excalidraw-skill/scripts/healthcheck.cjs
-EXPRESS_SERVER_URL=http://127.0.0.1:3000 node packages/excalidrop/skills/excalidraw-skill/scripts/export-elements.cjs --out diagram.elements.json
-EXPRESS_SERVER_URL=http://127.0.0.1:3000 node packages/excalidrop/skills/excalidraw-skill/scripts/import-elements.cjs --in diagram.elements.json --mode batch
+EXPRESS_SERVER_URL=http://127.0.0.1:3000 node skills/excalidraw-skill/scripts/healthcheck.cjs
+EXPRESS_SERVER_URL=http://127.0.0.1:3000 node skills/excalidraw-skill/scripts/export-elements.cjs --out diagram.elements.json
+EXPRESS_SERVER_URL=http://127.0.0.1:3000 node skills/excalidraw-skill/scripts/import-elements.cjs --in diagram.elements.json --mode batch
 ```
 
 ### When The Skill Is Useful
@@ -341,7 +328,7 @@ EXPRESS_SERVER_URL=http://127.0.0.1:3000 node packages/excalidrop/skills/excalid
 - Automated smoke tests: create/update/delete a known element to validate a deployment.
 - Repeatable diagrams: keep a library of element JSON snippets and import them.
 
-See `packages/excalidrop/skills/excalidraw-skill/SKILL.md` and `packages/excalidrop/skills/excalidraw-skill/references/cheatsheet.md`.
+See `skills/excalidraw-skill/SKILL.md` and `skills/excalidraw-skill/references/cheatsheet.md`.
 
 ## MCP Tools (26 Total)
 
@@ -356,7 +343,7 @@ See `packages/excalidrop/skills/excalidraw-skill/SKILL.md` and `packages/excalid
 | **Design Guide** | `read_diagram_guide` |
 | **Resources** | `get_resource` |
 
-Full schemas are discoverable via `tools/list` or in `packages/excalidrop/skills/excalidraw-skill/references/cheatsheet.md`.
+Full schemas are discoverable via `tools/list` or in `skills/excalidraw-skill/references/cheatsheet.md`.
 
 ## Testing
 

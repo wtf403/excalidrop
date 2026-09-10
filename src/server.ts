@@ -7,6 +7,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import logger from './utils/logger.js';
+import { getR2Config, r2Get, r2Put } from './utils/r2store.js';
+import { authOptional, requireWriteAuth, requireReadAuth, signSession, allowedLogins } from './utils/auth.js';
 import {
   elements,
   files,
@@ -42,6 +44,67 @@ const wss = new WebSocketServer({ server });
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
+app.use(authOptional);
+
+// ─── R2 persistence (scene keyed by repo or SCENE_ID) ───
+const SCENE_KEY = `${process.env.GITHUB_REPOSITORY?.replace('/', '__') || process.env.SCENE_ID || 'default'}.json`;
+let r2Cfg = getR2Config();
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
+async function loadFromR2(): Promise<void> {
+  r2Cfg = getR2Config();
+  if (!r2Cfg) return;
+  try {
+    const doc = await r2Get(r2Cfg, SCENE_KEY);
+    if (doc?.elements) { elements.clear(); for (const el of doc.elements) elements.set(el.id, el); if (doc.files) for (const f of doc.files) files.set(f.id, f); logger.info(`Loaded ${doc.elements.length} elements from R2`); }
+  } catch (e) { logger.warn('R2 load failed: ' + (e as Error).message); }
+}
+function schedulePersist(): void {
+  r2Cfg = getR2Config();
+  if (!r2Cfg) return;
+  if (persistTimer) clearTimeout(persistTimer);
+  persistTimer = setTimeout(async () => {
+    try { await r2Put(r2Cfg!, SCENE_KEY, { elements: Array.from(elements.values()), files: Array.from(files.values()), updatedAt: new Date().toISOString() }); logger.info('Persisted scene to R2'); }
+    catch (e) { logger.warn('R2 persist failed: ' + (e as Error).message); }
+  }, 800);
+}
+void loadFromR2();
+
+// ─── GitHub OAuth (2FA via github.com login; code lives 10min, session 30d cookie) ───
+app.get('/api/auth/login', (req, res) => {
+  const cid = process.env.GITHUB_CLIENT_ID;
+  if (!cid) return res.status(500).json({ success: false, error: 'GITHUB_CLIENT_ID not configured' });
+  const redirect = `${req.protocol}://${req.get('host')}/api/auth/callback`;
+  const url = `https://github.com/login/oauth/authorize?client_id=${cid}&redirect_uri=${encodeURIComponent(redirect)}&scope=read:user`;
+  res.redirect(url);
+});
+app.get('/api/auth/callback', async (req, res) => {
+  try {
+    const code = String(req.query.code || '');
+    const r = await fetch('https://github.com/login/oauth/access_token', { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: process.env.GITHUB_CLIENT_ID, client_secret: process.env.GITHUB_CLIENT_SECRET, code }) });
+    const tok = await r.json() as any;
+    if (!tok.access_token) throw new Error(tok.error_description || 'OAuth exchange failed');
+    const me = await (await fetch('https://api.github.com/user', { headers: { Authorization: `Bearer ${tok.access_token}`, 'User-Agent': 'excalidrop' } })).json() as any;
+    const allow = allowedLogins();
+    if (allow.length && !allow.includes(String(me.login).toLowerCase())) return res.status(403).send('User not allowed');
+    const token = signSession({ login: me.login, id: me.id, iat: Math.floor(Date.now() / 1000) });
+    res.setHeader('Set-Cookie', `excalidrop_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 24 * 3600}`);
+    res.send(`<script>localStorage.setItem('excalidrop_token','${token}');location.href='/'</script>Logged in as ${me.login}. <a href="/">Open canvas</a>`);
+  } catch (e) { res.status(500).send('Login failed: ' + (e as Error).message); }
+});
+app.get('/api/auth/me', (req, res) => res.json({ user: (req as any).user || null, publicRead: String(process.env.PUBLIC_READ || 'false') }));
+app.post('/api/auth/logout', (_req, res) => { res.setHeader('Set-Cookie', 'excalidrop_token=; Path=/; Max-Age=0'); res.json({ success: true }); });
+// Writes always authed (when OAuth configured); reads public iff PUBLIC_READ=true.
+const OPEN_WRITE_PATHS = new Set(['/api/export/image/result', '/api/viewport/result']);
+app.use('/api/', (req, res, next) => {
+  if (req.path.startsWith('/auth')) return next();
+  if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
+    if (OPEN_WRITE_PATHS.has(req.path)) return next();
+    return requireWriteAuth(req, res, next);
+  }
+  if (req.path.startsWith('/elements') || req.path.startsWith('/files') || req.path.startsWith('/snapshots')) return requireReadAuth(req, res, next);
+  next();
+});
+const persist = () => schedulePersist();
 
 // Serve static files from the build directory
 const staticDir = path.join(__dirname, '../dist');
@@ -274,7 +337,7 @@ app.post('/api/elements', (req: Request, res: Response) => {
       type: 'element_created',
       element: element
     };
-    broadcast(message);
+    broadcast(message); persist();
 
     res.json({
       success: true,
@@ -349,7 +412,7 @@ app.put('/api/elements/:id', (req: Request, res: Response) => {
       type: 'element_updated',
       element: updatedElement
     };
-    broadcast(message);
+    broadcast(message); persist();
 
     res.json({
       success: true,
@@ -417,7 +480,7 @@ app.delete('/api/elements/:id', (req: Request, res: Response) => {
       type: 'element_deleted',
       elementId: id!
     };
-    broadcast(message);
+    broadcast(message); persist();
 
     res.json({
       success: true,
@@ -672,7 +735,7 @@ app.post('/api/elements/batch', (req: Request, res: Response) => {
       type: 'elements_batch_created',
       elements: createdElements
     };
-    broadcast(message);
+    broadcast(message); persist();
 
     res.json({
       success: true,
@@ -786,7 +849,7 @@ app.post('/api/elements/sync', (req: Request, res: Response) => {
     logger.info(`Sync completed: ${successCount}/${frontendElements.length} elements synced`);
 
     // 3. Broadcast sync event to all WebSocket clients
-    broadcast({
+    persist(); broadcast({
       type: 'elements_synced',
       count: successCount,
       timestamp: new Date().toISOString(),
@@ -831,7 +894,7 @@ app.post('/api/files', (req: Request, res: Response) => {
     }
   }
   // Broadcast files to connected clients
-  broadcast({ type: 'files_added', files: fileList });
+  persist(); broadcast({ type: 'files_added', files: fileList });
   res.json({ success: true, count: fileList.length });
 });
 

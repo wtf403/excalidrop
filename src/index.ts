@@ -70,8 +70,18 @@ interface SyncResponse {
   elements?: ServerElement[];
 }
 
-// Helper functions to sync with Express server (canvas)
+// Helper functions to sync with Express server (canvas) or remote GitHub target
 async function syncToCanvas(operation: string, data: any): Promise<SyncResponse | null> {
+  const tgt = await import('./target.js');
+  if (tgt.isRemote()) {
+    try {
+      if (operation === 'create') return { element: tgt.rCreate(data as ServerElement) };
+      if (operation === 'update') return { element: tgt.rUpdate((data as any).id, data) };
+      if (operation === 'delete') { tgt.rDelete((data as any).id); return {}; }
+      if (operation === 'batch_create') return { elements: tgt.rBatch(data as ServerElement[]) };
+    } catch (e) { logger.warn(`Remote sync failed for ${operation}:`, (e as Error).message); return null; }
+    return null;
+  }
   if (!ENABLE_CANVAS_SYNC) {
     logger.debug('Canvas sync disabled, skipping');
     return null;
@@ -166,6 +176,10 @@ async function batchCreateElementsOnCanvas(elementsData: ServerElement[]): Promi
 
 // Helper to fetch element from canvas
 async function getElementFromCanvas(elementId: string): Promise<ServerElement | null> {
+  const tgt = await import('./target.js');
+  if (tgt.isRemote()) {
+    try { return tgt.rGet(elementId); } catch { return null; }
+  }
   if (!ENABLE_CANVAS_SYNC) {
     logger.debug('Canvas sync disabled, skipping fetch');
     return null;
@@ -833,6 +847,39 @@ const tools: Tool[] = [
     inputSchema: { type: 'object', properties: {} }
   },
   {
+    name: 'switch_remote',
+    description: 'Switch this MCP session between the local canvas and a remote GitHub-backed canvas. Pass a Pages URL (https://<owner>.github.io/<repo>/) or owner/repo to edit that repo\'s canvas (commits to GitHub, viewer updates on gh-pages). Omit target to switch back to local.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', description: 'Pages URL or owner/repo. Omit for local canvas.' }
+      }
+    }
+  },
+  {
+    name: 'github_login',
+    description: 'Log in to GitHub via device flow (2FA enforced by GitHub). Step 1 (no args): returns a code + URL for the user to approve. Step 2 (with device_code): polls until approved, stores the token, returns a Pages #token= link the user can open to edit in the browser.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        device_code: { type: 'string', description: 'From step 1 — poll until the user approves.' },
+        interval: { type: 'number', description: 'Poll interval from step 1.' },
+        site: { type: 'string', description: 'Pages URL to build the login link for.' },
+        repo: { type: 'string', description: 'Restrict the token to one repo (owner/repo).' }
+      }
+    }
+  },
+  {
+    name: 'commit_scene',
+    description: 'Immediately commit the current remote scene to GitHub (otherwise autosyncs ~10s after last edit). Local mode: no-op.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        message: { type: 'string', description: 'Commit message' }
+      }
+    }
+  },
+  {
     name: 'set_viewport',
     description: 'Control the canvas viewport (camera). Auto-fit all elements, center on a specific element, or set zoom/scroll directly. Requires the canvas frontend open in a browser.',
     inputSchema: {
@@ -898,7 +945,11 @@ function convertTextToLabel(element: ServerElement): ServerElement {
 }
 
 // Set up request handler for tool calls
-server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest) => {
+let toolQueue: Promise<void> = Promise.resolve();
+
+// Serialized: concurrent tool calls (e.g. switch+create+commit in one block)
+// must not interleave against the remote scene store.
+async function handleToolCall(request: CallToolRequest) {
   try {
     const { name, arguments: args } = request.params;
     logger.info(`Handling tool call: ${name}`);
@@ -1025,6 +1076,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
         const { type, filter, bbox } = params;
 
         try {
+          const tgt = await import('./target.js');
+          if (tgt.isRemote()) {
+            let results = tgt.rList(type);
+            if (bbox) {
+              results = results.filter(el =>
+                (bbox.x_min === undefined || el.x >= bbox.x_min) &&
+                (bbox.x_max === undefined || el.x <= bbox.x_max) &&
+                (bbox.y_min === undefined || el.y >= bbox.y_min) &&
+                (bbox.y_max === undefined || el.y <= bbox.y_max));
+            }
+            if (filter) results = results.filter(el => Object.entries(filter).every(([k, v]) => (el as any)[k] === v));
+            return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] };
+          }
           // Build query parameters
           const queryParams = new URLSearchParams();
           if (type) queryParams.set('type', type);
@@ -1076,6 +1140,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
           case 'library':
           case 'elements':
             try {
+              const tgtRes = await import('./target.js');
+              if (tgtRes.isRemote()) {
+                result = { elements: tgtRes.rList() };
+                break;
+              }
               // Get elements from HTTP server
               const response = await fetch(`${activeCanvasUrl()}/api/elements`);
               if (!response.ok) {
@@ -1490,6 +1559,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
       case 'clear_canvas': {
         logger.info('Clearing canvas via MCP');
 
+        const tgtClear = await import('./target.js');
+        if (tgtClear.isRemote()) {
+          const n = tgtClear.rClear();
+          return { content: [{ type: 'text', text: `Canvas cleared (${n} elements removed, will commit to GitHub).` }] };
+        }
+
         const response = await fetch(`${activeCanvasUrl()}/api/elements/clear`, {
           method: 'DELETE'
         });
@@ -1514,6 +1589,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
         }).parse(args || {});
 
         logger.info('Exporting scene via MCP');
+
+        const tgtExp = await import('./target.js');
+        if (tgtExp.isRemote()) {
+          const sceneElements = tgtExp.rList();
+          const excalidrawScene: any = { type: 'excalidraw', version: 2, source: 'mcp-excalidraw-server', elements: sceneElements, appState: { viewBackgroundColor: '#ffffff', gridSize: null } };
+          const jsonString = JSON.stringify(excalidrawScene, null, 2);
+          if (params.filePath) {
+            const safePath = sanitizeFilePath(params.filePath);
+            fs.writeFileSync(safePath, jsonString, 'utf-8');
+            return { content: [{ type: 'text', text: `Scene exported to ${safePath} (${sceneElements.length} elements)` }] };
+          }
+          return { content: [{ type: 'text', text: jsonString }] };
+        }
 
         const response = await fetch(`${activeCanvasUrl()}/api/elements`);
         if (!response.ok) {
@@ -1597,7 +1685,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
 
         // If replace mode, clear first
         if (params.mode === 'replace') {
-          await fetch(`${activeCanvasUrl()}/api/elements/clear`, { method: 'DELETE' });
+          const tgtImp = await import('./target.js');
+          if (tgtImp.isRemote()) tgtImp.rClear();
+          else await fetch(`${activeCanvasUrl()}/api/elements/clear`, { method: 'DELETE' });
         }
 
         // Batch create the imported elements
@@ -1785,6 +1875,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
 
       case 'describe_scene': {
         logger.info('Describing scene via MCP');
+
+        const tgtDesc = await import('./target.js');
+        if (tgtDesc.isRemote()) {
+          const allElements = tgtDesc.rList();
+          if (allElements.length === 0) {
+            return { content: [{ type: 'text', text: 'The canvas is empty. No elements to describe.' }] };
+          }
+          const counts: Record<string, number> = {};
+          for (const el of allElements) counts[el.type] = (counts[el.type] || 0) + 1;
+          const lines = allElements.map(el => `[${el.id}] ${el.type} at (${Math.round(el.x)}, ${Math.round(el.y)})${(el as any).text ? ` text: "${(el as any).text}"` : ''}`);
+          return { content: [{ type: 'text', text: `Canvas: ${allElements.length} elements (${Object.entries(counts).map(([k, v]) => `${v}x ${k}`).join(', ')})\n${lines.join('\n')}` }] };
+        }
 
         const response = await fetch(`${activeCanvasUrl()}/api/elements`);
         if (!response.ok) {
@@ -2296,7 +2398,53 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
       }
 
       case 'current_canvas': {
-        return { content: [{ type: 'text', text: activeCanvasUrl() }] };
+        const tgtCur = await import('./target.js');
+        const t = tgtCur.getTarget();
+        return { content: [{ type: 'text', text: t.kind === 'remote' ? `remote:${t.repo} (local canvas: ${activeCanvasUrl()})` : activeCanvasUrl() }] };
+      }
+
+      case 'switch_remote': {
+        const sp = z.object({ target: z.string().optional() }).parse(args || {});
+        const tgtSw = await import('./target.js');
+        const out = await tgtSw.switchRemote(sp.target);
+        if (out.target.kind === 'remote') {
+          return { content: [{ type: 'text', text: `Switched to remote canvas ${out.target.repo} (${out.elements} elements loaded). Edits commit to GitHub; viewer updates on gh-pages. Site: https://${out.target.repo.replace('/', '.github.io/')}/` }] };
+        }
+        return { content: [{ type: 'text', text: `Switched back to local canvas ${activeCanvasUrl()}` }] };
+      }
+
+      case 'github_login': {
+        const lp = z.object({ device_code: z.string().optional(), interval: z.number().optional(), site: z.string().optional(), repo: z.string().optional() }).parse(args || {});
+        const tgtLogin = await import('./target.js');
+        const { APP_CLIENT_ID: _cid } = await import('./target.js');
+        const clientId = process.env.GITHUB_OAUTH_CLIENT_ID || _cid;
+        if (!lp.device_code) {
+          const existing = tgtLogin.resolveToken();
+          if (existing) return { content: [{ type: 'text', text: 'Already logged in to GitHub (token from env/gh CLI/stored).' }] };
+          if (!clientId) throw new Error('No token found and GITHUB_OAUTH_CLIENT_ID not set. Run `gh auth login`, set GITHUB_TOKEN, or configure an OAuth App client ID for device flow.');
+          const dev = await tgtLogin.deviceStart(clientId);
+          return { content: [{ type: 'text', text: `Ask the user to open ${dev.verification_uri} and enter code ${dev.user_code}, then call github_login again with { device_code: "${dev.device_code}", interval: ${dev.interval}${lp.site ? `, site: "${lp.site}"` : ''} }` }] };
+        }
+        // Restrict the token to the canvas repo when we know it (least privilege)
+        let repositoryId: number | undefined;
+        const repoRef = lp.repo || lp.site;
+        if (repoRef) {
+          try {
+            const [owner, repo] = tgtLogin.parseRepo(repoRef).split('/');
+            repositoryId = (await tgtLogin.repoId(owner!, repo!)) || undefined;
+          } catch { /* unrestricted token */ }
+        }
+        const token = await tgtLogin.devicePoll(clientId, lp.device_code, lp.interval || 5, 300, repositoryId);
+        const link = lp.site ? `\nBrowser login link: ${lp.site.replace(/\/$/, '')}/#token=${token}` : '';
+        return { content: [{ type: 'text', text: `Logged in to GitHub (token stored${repositoryId ? `, restricted to repo ${repositoryId}` : ''}).${link}` }] };
+      }
+
+      case 'commit_scene': {
+        const cp = z.object({ message: z.string().optional() }).parse(args || {});
+        const tgtCommit = await import('./target.js');
+        if (!tgtCommit.isRemote()) return { content: [{ type: 'text', text: 'Local mode — nothing to commit (local canvas syncs live).' }] };
+        const out = await tgtCommit.commitNow(cp.message);
+        return { content: [{ type: 'text', text: `Committed ${out.count} elements (${out.sha.slice(0, 7)}).` }] };
       }
 
       default:
@@ -2309,6 +2457,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
       isError: true
     };
   }
+}
+
+server.setRequestHandler(CallToolRequestSchema, (request: CallToolRequest) => {
+  const task = toolQueue.then(() => handleToolCall(request));
+  toolQueue = task.then(() => undefined, () => undefined);
+  return task;
 });
 
 // Set up request handler for listing available tools
@@ -2325,6 +2479,16 @@ async function runServer(): Promise<void> {
     const transport = new StdioServerTransport();
     logger.debug('Connecting to stdio transport...');
 
+    // Remembered remote target FIRST: restore before serving so the first tool
+    // call never races a half-loaded scene (active=remote but store empty).
+    try {
+      const tgtInit = await import('./target.js');
+      const saved = tgtInit.loadSavedTarget();
+      if (saved) {
+        const out = await tgtInit.switchRemote(saved);
+        logger.info(`Restored remote canvas ${saved} (${out.elements} elements) from .excalidrop.json`);
+      }
+    } catch (e) { logger.warn('No saved remote target (local mode): ' + (e as Error).message); }
     await server.connect(transport);
     logger.info('Excalidraw MCP server running on stdio');
 
