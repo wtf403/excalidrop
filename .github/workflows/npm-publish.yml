@@ -17,11 +17,9 @@ jobs:
   publish:
     name: Publish to NPM Registry
     runs-on: ubuntu-latest
-    defaults:
-      run:
-      permissions:
-          contents: read
-          id-token: write
+    permissions:
+      contents: write
+      id-token: write
 
     steps:
       - name: Checkout code
