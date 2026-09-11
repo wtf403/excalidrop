@@ -259,7 +259,7 @@ async function cmdInit(args: string[]): Promise<void> {
     if (!ghAuthed()) {
       console.log('GitHub: not logged in. Run `gh auth login` first (2FA via GitHub), then re-run init.\n');
     } else {
-      const pub = await prompt(`Publish an empty canvas to ${slug} (creates gh-pages + enables Pages)? [Y/n] `);
+      const pub = await prompt(`Publish an empty canvas to ${slug} (creates excalidrop + enables Pages)? [Y/n] `);
       if (!pub || /^(y|yes)$/i.test(pub)) {
         const r = spawnSync('bash', [path.join(__dirname, '../scripts/publish-pages.sh')], {
           stdio: 'inherit', env: { ...process.env, REPO_SLUG: slug },
@@ -369,7 +369,7 @@ async function cmdPages(_args: string[]): Promise<void> {
   console.log('1. Publish viewer: npx excalidrop publish');
   console.log('   (uses `gh auth` — repo auto-detected, Pages auto-enabled.)\n');
   console.log('2. In your agent: switch_remote { target: "<owner>.github.io/<repo>" }');
-  console.log('   Draw as usual — commits land on GitHub, viewer updates on gh-pages.\n');
+  console.log('   Draw as usual — commits land on GitHub, viewer updates on excalidrop.\n');
   console.log('3. Login: click Login with GitHub on the canvas (installs the app on the repo),');
   console.log('   or ask the agent to run github_login (device flow, 2FA via GitHub).\n');
   console.log('Rule: never edit the canvas locally — the Pages site + GitHub repo are the canvas.');
@@ -382,7 +382,7 @@ function cmdRemote(): void {
 
 async function cmdSetup(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
-    console.log('Usage: npx excalidrop setup\n\nChecks `gh auth`, publishes the viewer to this repo\'s gh-pages\n(enabling Pages if needed), then prints the app-install link and next steps.');
+    console.log('Usage: npx excalidrop setup\n\nChecks `gh auth`, publishes the viewer to this repo\'s excalidrop\n(enabling Pages if needed), then prints the app-install link and next steps.');
     return;
   }
   console.log('excalidrop setup — works on any repo you own or can access\n');
@@ -465,9 +465,9 @@ Usage:
   npx excalidrop up [--port=N]                  start this project's canvas server
   npx excalidrop setup                        one-command setup on any repo (gh auth + publish + guide)
   npx excalidrop login                        GitHub device-flow login from the terminal
-  npx excalidrop pages                        GitHub-truth + gh-pages publish guide
+  npx excalidrop pages                        GitHub-truth + excalidrop publish guide
   npx excalidrop remote                       run remote MCP-v2 (GitHub-backed, multi-project)
-  npx excalidrop publish                      publish viewer straight to gh-pages (no Actions)
+  npx excalidrop publish                      publish viewer straight to excalidrop (no Actions)
   npx excalidrop mcp                            run MCP stdio server (used by AI agents)
   npx excalidrop status                         show port + canvas health
   npx excalidrop add                            print AI-agent install commands

@@ -11,7 +11,7 @@ console.log(`
 
     npx excalidrop setup
 
-  checks gh auth, publishes the viewer to gh-pages, prints the app-install
+  checks gh auth, publishes the viewer to the excalidrop branch, prints the app-install
   link and verifies the site is live. Then tell your agent:
 
     switch_remote { target: "<your Pages URL>" }

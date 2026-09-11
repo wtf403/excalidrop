@@ -8,20 +8,27 @@ export function detectRepo(): RepoRef | null {
     const q = new URLSearchParams(window.location.search).get('repo');
     if (q?.includes('/')) {
       const [owner, repo] = q.split('/');
-      if (owner && repo) return { owner, repo, branch: 'gh-pages' };
+      if (owner && repo) return { owner, repo, branch: 'excalidrop' };
     }
   } catch {}
   const explicit = (import.meta as any).env?.VITE_REPO_SLUG as string | undefined;
   if (explicit?.includes('/')) {
     const [owner, repo] = explicit.split('/');
-    return { owner, repo, branch: 'gh-pages' };
+    return { owner, repo, branch: 'excalidrop' };
   }
   const host = window.location.hostname; // <owner>.github.io
   const parts = window.location.pathname.split('/').filter(Boolean);
   if (host.endsWith('.github.io') && parts.length > 0) {
-    return { owner: host.slice(0, -'.github.io'.length), repo: parts[0], branch: 'gh-pages' };
+    return { owner: host.slice(0, -'.github.io'.length), repo: parts[0], branch: 'excalidrop' };
   }
   return null;
+}
+
+// Direct git-blob URL for the scene file. Raw serves CORS * with a 300s edge
+// TTL, so anonymous polls add a cache-buster and never depend on a Pages
+// build; saves commit straight to this branch via the Contents API.
+export function rawSceneUrl(ref: RepoRef): string {
+  return `https://raw.githubusercontent.com/${ref.owner}/${ref.repo}/${ref.branch}/canvas.excalidraw`;
 }
 
 const TOKEN_KEY = 'excalidrop_gh_token';
@@ -98,7 +105,18 @@ export async function pushScene(
 }
 
 
-export async function loadStaticScene(): Promise<{ elements: any[]; files?: Record<string, unknown> }> {
+export async function loadStaticScene(ref?: RepoRef): Promise<{ elements: any[]; files?: Record<string, unknown> }> {
+  // Prefer the raw git blob (live the moment a save commits, no Pages build
+  // in between); fall back to the Pages-served copy.
+  if (ref) {
+    try {
+      const r = await fetch(`${rawSceneUrl(ref)}?t=${Date.now()}`, { cache: 'no-store' });
+      if (r.ok) {
+        const j = await r.json();
+        return { elements: j.elements || [], files: j.files || {} };
+      }
+    } catch { /* fall through to Pages copy */ }
+  }
   const r = await fetch('./canvas.excalidraw', { cache: 'no-cache' });
   if (!r.ok) throw new Error(`scene fetch ${r.status}`);
   const j = await r.json();

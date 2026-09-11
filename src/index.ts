@@ -838,7 +838,7 @@ const tools: Tool[] = [
   },
   {
     name: 'switch_remote',
-    description: 'Switch this MCP session between the local canvas and a remote GitHub-backed canvas. Pass a Pages URL (https://<owner>.github.io/<repo>/) or owner/repo to edit that repo\'s canvas (commits to GitHub, viewer updates on gh-pages). Omit target to switch back to local.',
+    description: 'Switch this MCP session between the local canvas and a remote GitHub-backed canvas. Pass a Pages URL (https://<owner>.github.io/<repo>/) or owner/repo to edit that repo\'s canvas (commits to GitHub, viewer updates on excalidrop). Omit target to switch back to local.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2389,7 +2389,7 @@ async function handleToolCall(request: CallToolRequest) {
         const tgtSw = await import('./target.js');
         const out = await tgtSw.switchRemote(sp.target);
         if (out.target.kind === 'remote') {
-          return { content: [{ type: 'text', text: `Switched to remote canvas ${out.target.repo} (${out.elements} elements loaded). Edits commit to GitHub; viewer updates on gh-pages. Site: https://${out.target.repo.replace('/', '.github.io/')}/` }] };
+          return { content: [{ type: 'text', text: `Switched to remote canvas ${out.target.repo} (${out.elements} elements loaded). Edits commit to GitHub; viewer updates on excalidrop. Site: https://${out.target.repo.replace('/', '.github.io/')}/` }] };
         }
         return { content: [{ type: 'text', text: `Switched back to local canvas ${activeCanvasUrl()}` }] };
       }

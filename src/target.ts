@@ -135,14 +135,14 @@ export async function commitNow(message?: string): Promise<{ sha: string; count:
   const elements = Array.from(st.elements.values());
   const doc = { type: 'excalidraw', version: 2, source: 'excalidrop', elements };
   const gh = await import('./utils/github.js');
+  // Hot path is a single PUT — no Pages/metadata/build side calls per save
+  // (one-time setup covers those; the viewer reads the raw blob directly).
   const newSha = await gh.putFile(repo, SCENE_PATH, doc, message || `excalidrop: update ${elements.length} elements`, gh.CANVAS_BRANCH, st.sha || undefined);
   st.sha = newSha;
   st.dirty = false;
   try {
     await gh.syncPages(repo, doc);
-    await gh.configureGitHubPages(repo, gh.CANVAS_BRANCH);
-    await gh.ensureRepoMetadata(repo, `https://${repo.replace('/', '.github.io/')}/`);
-  } catch (e) { logger.warn('post-commit setup failed: ' + (e as Error).message); }
+  } catch (e) { logger.warn('post-commit viewer check failed: ' + (e as Error).message); }
   logger.info(`Committed ${elements.length} elements to ${repo}`);
   return { sha: st.sha as string, count: elements.length };
 }

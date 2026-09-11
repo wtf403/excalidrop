@@ -25,13 +25,13 @@ export const SCENE_PATH = process.env.SCENE_PATH || 'canvas.excalidraw';
 
 // The branch that serves the Pages site AND holds the scene file.
 // Must match the frontend's detectRepo() (ghSync.ts) and scripts/publish-pages.sh.
-// (An older backend revision used 'excalidrop' here, which stranded repos on a
-// viewer-less branch that GitHub rendered as a Jekyll README page.)
-export const CANVAS_BRANCH = process.env.CANVAS_BRANCH || 'gh-pages';
+export const CANVAS_BRANCH = process.env.CANVAS_BRANCH || 'excalidrop';
 
 // Branch GitHub Pages serves. Same as CANVAS_BRANCH by default so the viewer
-// and canvas.excalidraw live together; the viewer loads ./canvas.excalidraw.
-export const PAGES_BRANCH = process.env.PAGES_BRANCH || 'gh-pages';
+// and canvas.excalidraw live together. The viewer reads the scene straight
+// from the git blob (raw.githubusercontent.com), so it never waits on a
+// Pages build; saves are a single Contents-API PUT, no per-save side calls.
+export const PAGES_BRANCH = process.env.PAGES_BRANCH || 'excalidrop';
 
 export function allowedRepos(): string[] {
   const list = (process.env.ALLOWED_REPOS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
@@ -118,14 +118,11 @@ export async function saveScene(repo: string, elements: any[], files: any[], sha
 export async function syncPages(repo: string, scene: any): Promise<void> {
   assertRepo(repo);
   if (!token()) throw new Error('GITHUB_TOKEN missing');
-  // 1. The scene file is written to CANVAS_BRANCH by saveScene/putFile. When the
-  //    Pages branch differs, mirror it there so the viewer loads ./canvas.excalidraw.
-  if (CANVAS_BRANCH !== PAGES_BRANCH) {
-    const doc = normalizeSceneDoc(scene);
-    await putContentsFile(repo, PAGES_BRANCH, SCENE_PATH, doc, `excalidrop: sync scene (${doc.elements.length} elements)`);
-  }
-  // 2. Make sure the Pages branch actually serves the viewer. Without index.html
-  //    GitHub falls back to Jekyll-rendering the README (the classic "wtf is that" page).
+  // The scene file is written to CANVAS_BRANCH by saveScene/putFile and the
+  // viewer reads it straight from the git blob — no per-save mirroring, no
+  // Pages config, no build requests on the hot path (setup covers those once).
+  // Only make sure the Pages branch actually serves the viewer. Without
+  // index.html GitHub falls back to Jekyll-rendering the README.
   await ensureViewer(repo, scene);
 }
 

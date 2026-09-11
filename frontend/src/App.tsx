@@ -81,7 +81,7 @@ interface ApiResponse {
 
 type SyncStatus = 'idle' | 'syncing' | 'success' | 'error';
 const authHeaders = (): Record<string, string> => {
-  // Static (gh-pages) mode stores the user token under excalidrop_gh_token
+  // Static (excalidrop branch) mode stores the user token under excalidrop_gh_token
   // (see utils/ghSync); server mode uses excalidrop_token. Accept both.
   const t = localStorage.getItem('excalidrop_gh_token') || localStorage.getItem('excalidrop_token');
   return t ? { Authorization: `Bearer ${t}` } : {};
@@ -385,8 +385,12 @@ function App(): JSX.Element {
         // Raw mode has no sha header — content compare below is the change check.
         doc = await res.json().catch(() => null)
       } else {
-        // Read-only viewer on a public repo: poll the Pages-hosted scene file.
-        const res = await fetch('./canvas.excalidraw', { cache: 'no-store' }).catch(() => null)
+        // Read-only viewer on a public repo: poll the raw git blob directly
+        // (live on commit, no Pages build in between; cache-buster beats the
+        // 300s edge TTL), falling back to the Pages-hosted copy.
+        const gh = await import('./utils/ghSync')
+        let res = await fetch(`${gh.rawSceneUrl(ghRepo)}?t=${Date.now()}`, { cache: 'no-store' }).catch(() => null)
+        if (!res?.ok) res = await fetch('./canvas.excalidraw', { cache: 'no-store' }).catch(() => null)
         if (!res?.ok) return
         doc = await res.json().catch(() => null)
       }
@@ -413,7 +417,7 @@ function App(): JSX.Element {
 
   useEffect(() => {
     if (serverMode) return
-    const id = setInterval(() => { void pushToGitHub(false); void pullFromGitHub() }, 10000)
+    const id = setInterval(() => { void pushToGitHub(false); void pullFromGitHub() }, 20000)
     const flush = () => { void pushToGitHub(true) }
     const guard = (e: BeforeUnloadEvent) => {
       if (ghDirty || ghPushInFlightRef.current) { e.preventDefault() }
@@ -489,7 +493,7 @@ function App(): JSX.Element {
     if (excalidrawAPI) {
       loadExistingElements()
 
-      // Static (gh-pages) mode has no WebSocket server — never connect there,
+      // Static (excalidrop branch) mode has no WebSocket server — never connect there,
       // otherwise it retries wss://<host>/ forever and spams the console.
       if (serverMode && !isConnected) {
         connectWebSocket()
@@ -522,7 +526,7 @@ function App(): JSX.Element {
         return
       }
       const gh = await import('./utils/ghSync')
-      const scene = await gh.loadStaticScene()
+      const scene = await gh.loadStaticScene(ghRepo)
       if (scene.elements.length > 0 && excalidrawAPI) {
         const converted = convertElementsPreservingImageProps(scene.elements.map(cleanElementForExcalidraw))
         applySceneUpdateWithoutAutoSync(excalidrawAPI, { elements: converted, captureUpdate: CaptureUpdateAction.NEVER })
