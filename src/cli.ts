@@ -404,6 +404,18 @@ async function cmdSetup(args: string[]): Promise<void> {
     process.exit(1);
   }
   console.log(`Repo: ${slug} (detected from git remote)\n`);
+  const appSlug = process.env.EXCALIDROP_APP_SLUG || 'excalidrop';
+  // 1b. best-effort: is the shared app installed on this repo? Browser login
+  // and agent saves only work where the installation reaches. Non-fatal —
+  // install can happen after setup via the printed link.
+  try {
+    const inst = spawnSync('gh', ['api', `repos/${slug}/installation`, '--jq', '.id'], { stdio: 'pipe', encoding: 'utf8' });
+    if (inst.status === 0 && inst.stdout.trim()) {
+      console.log('Excalidrop app installation detected on this repo.\n');
+    } else {
+      console.log(`Note: the Excalidrop app isn't installed on ${slug} yet — browser login stays read-only until it is:\n     https://github.com/apps/${appSlug}/installations/new\n`);
+    }
+  } catch { /* non-fatal */ }
   // 2. publish viewer (auto-enables Pages, auto-syncs scene)
   await new Promise<void>((resolve, reject) => {
     const child = spawn('bash', [path.join(__dirname, '../scripts/publish-pages.sh')], { stdio: 'inherit', env: { ...process.env, REPO_SLUG: slug } });
@@ -428,7 +440,6 @@ async function cmdSetup(args: string[]): Promise<void> {
   }
   console.log(verified ? 'Verified: viewer + scene live.' : 'Note: Pages still building — check back in a minute.');
   // 4. next steps: install the shared app + draw
-  const appSlug = process.env.EXCALIDROP_APP_SLUG || 'excalidrop';
   console.log(`\nDone. Your canvas: https://${sOwner}.github.io/${sRepo}/\n`);
   console.log('Two remaining clicks (one time per repo):');
   console.log(`  1. Install the Excalidrop app on this repo:\n     https://github.com/apps/${appSlug}/installations/new\n`);

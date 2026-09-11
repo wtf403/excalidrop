@@ -450,12 +450,16 @@ function App(): JSX.Element {
     })()
   }, [serverMode, ghToken, ghRepo])
 
-  // Token login. When the build bakes VITE_AUTH_EXCHANGE_URL (see worker/),
-  // login is a true redirect: GitHub sends the tab back with ?code= and the
-  // worker swaps it for a token — no modal, no pasting. Without it we fall
-  // back to paste-a-token (github.com sends no CORS headers, so a static
-  // page can never run any OAuth/device flow by itself).
-  const AUTH_EXCHANGE_URL = (import.meta as any).env?.VITE_AUTH_EXCHANGE_URL as string | undefined
+  // Token login. Shared exchanger + app id are the package defaults so any
+  // publisher's canvas offers one-click login with zero config; both are
+  // overridable at build time for self-hosters (VITE_AUTH_EXCHANGE_URL,
+  // VITE_GITHUB_CLIENT_ID). Without an exchange URL we fall back to
+  // paste-a-token (github.com sends no CORS headers, so a static page can
+  // never run any OAuth/device flow by itself).
+  const _exchangeEnv = (import.meta as any).env?.VITE_AUTH_EXCHANGE_URL as string | undefined
+  // 'off' restores the paste-a-token panel (no redirect login at all).
+  const AUTH_EXCHANGE_URL = _exchangeEnv === 'off' ? undefined
+    : (_exchangeEnv || 'https://excalidrop.wtf403.workers.dev')
   const OAUTH_STATE_KEY = 'excalidrop_oauth_state'
   const OAUTH_REDIRECT_KEY = 'excalidrop_oauth_redirect'
   const [tokenInput, setTokenInput] = useState<string>('')

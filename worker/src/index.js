@@ -17,6 +17,30 @@ function json(data, status, cors) {
   });
 }
 
+// Match a redirect origin against the allowlist. Entries are either exact
+// origins ("https://wtf403.github.io") or wildcard suffixes ("*.github.io")
+// so one shared deployment can serve every publisher's canvas without
+// registering each URL. HTTPS only — plain-http origins never match.
+function originAllowed(origin, allowlist) {
+  if (!origin || !origin.startsWith('https://')) return false;
+  let host;
+  try {
+    host = new URL(origin).host.toLowerCase();
+  } catch {
+    return false;
+  }
+  return allowlist.some((entry) => {
+    const e = entry.trim().toLowerCase();
+    if (!e) return false;
+    if (e.startsWith('*.')) return host === e.slice(2) || host.endsWith(e.slice(1));
+    try {
+      return new URL(e).origin.toLowerCase() === new URL(origin).origin.toLowerCase();
+    } catch {
+      return false;
+    }
+  });
+}
+
 export default {
   async fetch(req, env) {
     const origin = req.headers.get('Origin') || '';
@@ -24,8 +48,11 @@ export default {
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
+    // Empty allowlist = forbidden (fail closed). Operators opt in explicitly,
+    // either with exact origins or a "*.github.io"-style suffix for shared use.
+    const originOk = originAllowed(origin, allowed);
     const cors = {
-      'Access-Control-Allow-Origin': !allowed.length || allowed.includes(origin) ? origin || '*' : 'null',
+      'Access-Control-Allow-Origin': originOk ? origin : 'null',
       'Access-Control-Allow-Methods': 'POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type',
       Vary: 'Origin',
@@ -53,11 +80,13 @@ export default {
     if (allowed.length) {
       let ok = false;
       try {
-        ok = allowed.includes(new URL(redirect_uri).origin);
+        ok = originAllowed(new URL(redirect_uri).origin, allowed);
       } catch {
         ok = false;
       }
       if (!ok) return json({ error: 'redirect_uri not allowed' }, 403, cors);
+    } else {
+      return json({ error: 'no allowed origins configured' }, 403, cors);
     }
     if (!env.GITHUB_CLIENT_ID || !env.GITHUB_CLIENT_SECRET) {
       return json({ error: 'worker misconfigured (client id/secret missing)' }, 500, cors);

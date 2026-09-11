@@ -37,3 +37,21 @@ It works with either app type — only the two values below change.
 
 Without `VITE_AUTH_EXCHANGE_URL` the viewer falls back to paste-a-token
 login — no worker needed.
+
+## Shared model (every publisher, zero config)
+
+The package defaults point at one shared deployment, so any repo's canvas
+gets one-click login out of the box:
+
+- App callback URLs: `https://github.io` **with wildcard matching on** —
+  per GitHub's rules this covers `https://<anyone>.github.io/<any-repo>/`.
+  Exact per-canvas URLs also work (up to 10); `redirect_uri` selects.
+- `ALLOWED_REDIRECT_ORIGINS = "*.github.io"` (this repo's default).
+- Viewers ship `VITE_GITHUB_CLIENT_ID` + `VITE_AUTH_EXCHANGE_URL` defaults;
+  publishers override both at publish time for self-hosting
+  (`VITE_AUTH_EXCHANGE_URL=off` restores paste-only login).
+
+Trust note: with the shared **GitHub App**, tokens only ever reach repos
+where the app is installed, with its configured permissions — the worker
+cannot mint access to anything else. A shared OAuth App would instead ask
+every user for `repo` scope over all their repos; don't do that.

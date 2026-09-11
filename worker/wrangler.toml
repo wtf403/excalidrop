@@ -6,6 +6,6 @@ compatibility_date = "2024-01-01"
 #   wrangler secret put GITHUB_CLIENT_SECRET
 [vars]
 GITHUB_CLIENT_ID = "Iv23liuS2fx3QOEIoDmx"
-# Comma-separated canvas origins allowed to use this exchanger, e.g.:
-# ALLOWED_REDIRECT_ORIGINS = "https://wtf403.github.io"
-ALLOWED_REDIRECT_ORIGINS = "https://wtf403.github.io"
+# Comma-separated allowed canvas origins: exact ("https://wtf403.github.io")
+# or "*.github.io"-style suffixes so one deployment serves every publisher.
+ALLOWED_REDIRECT_ORIGINS = "*.github.io"
