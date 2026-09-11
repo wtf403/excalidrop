@@ -411,11 +411,17 @@ function App(): JSX.Element {
   // Token already refreshed for this credential (avoids a refresh retry loop
   // when the refresh token itself is dead — then manual re-login is needed).
   const refreshedForRef = useRef<string | null>(null)
+  // Guards out-of-order resolution: a slow check started with an older token
+  // must never overwrite the verdict of a newer one (this exact race wedged
+  // the canvas read-only right after a successful re-login).
+  const accessSeqRef = useRef(0)
 
   useEffect(() => {
     if (serverMode || !ghRepo) return
     if (!ghToken) { setAccess('denied'); setAccessDetail(null); setGhLogin(''); return }
     setAccess('unknown')
+    const seq = ++accessSeqRef.current
+    const stillCurrent = (): boolean => seq === accessSeqRef.current
     void (async () => {
       try {
         const gh = await import('./utils/ghSync')
@@ -428,6 +434,7 @@ function App(): JSX.Element {
           return // effect re-runs with the new token
         }
         const { access: a, login, detail } = await gh.checkAccess(ghRepo, token)
+        if (!stillCurrent()) return
         if (detail === 'expired' && refreshedForRef.current !== token) {
           refreshedForRef.current = token
           const renewed = await gh.tryRefreshToken(gh.CLIENT_ID, { force: true })
@@ -436,10 +443,12 @@ function App(): JSX.Element {
             return // effect re-runs with the new token
           }
         }
+        if (!stillCurrent()) return
         setAccess(a)
         setAccessDetail(detail)
         setGhLogin(login)
       } catch (e) {
+        if (!stillCurrent()) return
         // Network failure vs dead token: gh() embeds the HTTP status, so a
         // 401 here still means expired — offer re-login, not a dead end.
         const expired = String((e as Error)?.message || '').includes('401')
