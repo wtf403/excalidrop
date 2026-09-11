@@ -159,6 +159,38 @@ export async function saveScene(repo: string, elements: any[], files: any[], sha
   return putFile(repo, SCENE_PATH, { type: 'excalidraw', version: 2, source: 'excalidrop', elements, files: files || {} }, msg, CANVAS_BRANCH, sha || undefined);
 }
 
+function extForMime(mime: string): string {
+  const map: Record<string, string> = {
+    'image/png': 'png', 'image/jpeg': 'jpg', 'image/jpg': 'jpg',
+    'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg',
+  };
+  return map[mime] || 'png';
+}
+
+// Commit image binaries to assets/<fileId>.<ext> on the canvas branch so
+// pasted/MCP-added images exist as real files, not just base64 inside
+// canvas.excalidraw. Best-effort: skips files already present upstream.
+export async function syncAssets(repo: string, files: any): Promise<void> {
+  if (!token()) return;
+  const list: any[] = Array.isArray(files) ? files : Object.values((files as any) || {});
+  const withData = list.filter((f) => f?.id && typeof f?.dataURL === 'string' && f.dataURL.startsWith('data:'));
+  if (withData.length === 0) return;
+  await Promise.all(withData.map(async (f) => {
+    try {
+      const m = /^data:([^;]+);base64,(.+)$/s.exec(f.dataURL);
+      if (!m) return;
+      const assetPath = `assets/${f.id}.${extForMime(f.mimeType || m[1])}`;
+      const head = await fetch(`${API}/repos/${repo}/contents/${assetPath}?ref=${CANVAS_BRANCH}`, { headers: headers() });
+      if (head.ok) return;
+      if (head.status !== 404) throw new Error(`asset check ${head.status}`);
+      const body: any = { message: `excalidrop: add image asset ${f.id}`, content: m[2], branch: CANVAS_BRANCH };
+      const r = await fetch(`${API}/repos/${repo}/contents/${assetPath}`, { method: 'PUT', headers: headers(), body: JSON.stringify(body) });
+      if (!r.ok) throw new Error(`asset put ${r.status}: ${(await r.text()).slice(0, 200)}`);
+      logger.info(`Committed ${assetPath}@${CANVAS_BRANCH} in ${repo}`);
+    } catch (e) { logger.warn('asset sync failed: ' + (e as Error).message); }
+  }));
+}
+
 export async function syncPages(repo: string, scene: any): Promise<void> {
   // SETUP-TIME ONLY — never call from autosync/commit hot paths.
   // Saves are pure Contents-API PUTs; the viewer is deployed ONCE by the

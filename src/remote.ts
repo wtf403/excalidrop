@@ -51,6 +51,7 @@ async function saveMerged(st: ProjectState, msg: string): Promise<void> {
   const files = () => Array.from(st.files.values());
   try {
     st.sha = await gh.saveScene(st.repo, els(), files(), st.sha, msg);
+    try { await gh.syncAssets(st.repo, files()); } catch (e) { logger.warn('asset sync failed: ' + (e as Error).message); }
   } catch (e) {
     if (!(e instanceof gh.SceneConflictError)) throw e;
     gh.unionIntoMap(st.elements, e.freshElements);
@@ -58,6 +59,7 @@ async function saveMerged(st: ProjectState, msg: string): Promise<void> {
     for (const f of freshFiles) if (f?.id && !st.files.has(f.id)) st.files.set(f.id, f);
     st.sha = (e as any).freshSha;
     st.sha = await gh.saveScene(st.repo, els(), files(), st.sha, msg);
+    try { await gh.syncAssets(st.repo, files()); } catch (e2) { logger.warn('asset sync failed: ' + (e2 as Error).message); }
   }
   st.dirty = false;
 }

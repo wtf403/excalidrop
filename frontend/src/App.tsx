@@ -91,8 +91,48 @@ const authHeaders = (): Record<string, string> => {
 const AUTO_SYNC_DEBOUNCE_MS = 1200;
 
 
-const cleanElementForExcalidraw = (element: ServerElement): Partial<ExcalidrawElement> => {
-  const {
+// Crash-safe local journal. Network requests fired from beforeunload /
+// pagehide fundamentally cannot save reliably: keepalive bodies are capped
+// (~64 KiB — a scene PUT almost always exceeds it) and multi-request chains
+// (GET sha → PUT) never complete before teardown. So every edit is journaled
+// to localStorage (synchronous, guaranteed), unload handlers only do a sync
+// journal write, and the next boot restores + pushes whatever never made it.
+interface LocalSnapshot {
+  updatedAt: number;
+  elements: any[];
+  base: any[];
+}
+
+const snapshotKeyFor = (repo: { owner: string; repo: string } | null): string =>
+  repo ? `excalidrop_snapshot_${repo.owner}_${repo.repo}` : 'excalidrop_snapshot_local'
+
+const readLocalSnapshot = (key: string): LocalSnapshot | null => {
+  try {
+    const raw = localStorage.getItem(key)
+    if (!raw) return null
+    const snap = JSON.parse(raw) as LocalSnapshot
+    if (!snap || typeof snap.updatedAt !== 'number' || !Array.isArray(snap.elements)) return null
+    return snap
+  } catch {
+    return null
+  }
+}
+
+const writeLocalSnapshot = (key: string, elements: any[], base: any[]): void => {
+  try {
+    localStorage.setItem(key, JSON.stringify({ updatedAt: Date.now(), elements, base }))
+  } catch {
+    /* quota exceeded — interval autosave remains the fallback */
+  }
+}
+
+const clearLocalSnapshot = (key: string): void => {
+  try {
+    localStorage.removeItem(key)
+  } catch { /* non-fatal */ }
+}
+
+const cleanElementForExcalidraw = (element: ServerElement): Partial<ExcalidrawElement> => {  const {
     createdAt,
     updatedAt,
     version,
@@ -318,6 +358,7 @@ function App(): JSX.Element {
     setTimeout(() => setToast((t) => (t === msg ? null : t)), 4000)
   }
   const autoSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const journalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const syncInFlightRef = useRef<boolean>(false)
   const suppressAutoSyncCountRef = useRef<number>(0)
   const userInteractedRef = useRef<boolean>(false)
@@ -354,6 +395,9 @@ function App(): JSX.Element {
       if (autoSyncTimerRef.current) {
         clearTimeout(autoSyncTimerRef.current)
       }
+      if (journalTimerRef.current) {
+        clearTimeout(journalTimerRef.current)
+      }
     }
   }, [])
 
@@ -381,6 +425,68 @@ function App(): JSX.Element {
   // before fetching and aborts if it moved — so pull never applies a
   // pre-push snapshot over just-pushed state (stale-fetch race).
   const opSeqRef = useRef<number>(0)
+  const ghRepoRef = useRef(ghRepo)
+  ghRepoRef.current = ghRepo
+
+  // Synchronous journal write of the current scene. Safe to call from
+  // beforeunload/pagehide — no network, no await, cannot be torn down.
+  const journalScene = (): void => {
+    const api = excalidrawAPIRef.current
+    if (!api) return
+    try {
+      const els = api.getSceneElements().filter((el) => !el.isDeleted)
+      writeLocalSnapshot(snapshotKeyFor(ghRepoRef.current), els as any, baseElementsRef.current)
+    } catch { /* non-fatal */ }
+  }
+
+  // Debounced journaling for the onChange hot path.
+  const scheduleJournal = (): void => {
+    if (journalTimerRef.current) clearTimeout(journalTimerRef.current)
+    journalTimerRef.current = setTimeout(() => {
+      journalTimerRef.current = null
+      journalScene()
+    }, 800)
+  }
+
+  // Boot recovery: fold the journal (unsaved work from a previous session
+  // that never reached the network) over the freshly loaded upstream scene,
+  // 3-way merged against the base recorded when the journal was written —
+  // so upstream that moved on while we were away still composes instead of
+  // being clobbered. Returns true when journaled work was recovered.
+  const restoreLocalSnapshot = async (upstream: any[]): Promise<boolean> => {
+    const api = excalidrawAPIRef.current
+    if (!api) return false
+    const key = snapshotKeyFor(ghRepoRef.current)
+    const snap = readLocalSnapshot(key)
+    if (!snap) return false
+    const gh = await import('./utils/ghSync')
+    const sig = (els: any[]): string =>
+      JSON.stringify((els || []).map((e) => gh.elementSig(e)).sort())
+    if (sig(snap.elements) === sig(upstream || [])) {
+      clearLocalSnapshot(key)
+      return false
+    }
+    // Deliberate clear-canvas closed before the push went out: the journal is
+    // empty but the base matches upstream, so honor the clear instead of
+    // resurrecting (the merge below would resurrect — delete never wins there).
+    if (snap.elements.length === 0 && (snap.base || []).length > 0 &&
+        sig(snap.base) === sig(upstream || [])) {
+      applySceneUpdateWithoutAutoSync(api, { elements: [], captureUpdate: CaptureUpdateAction.NEVER })
+      showToast('Recovered unsaved work from before the tab closed')
+      return true
+    }
+    const { merged, conflicts } = gh.threeWayMerge(snap.base || [], snap.elements, upstream || [])
+    if (sig(merged) === sig(upstream || [])) {
+      clearLocalSnapshot(key)
+      return false
+    }
+    const converted = convertElementsPreservingImageProps(merged.map(cleanElementForExcalidraw))
+    applySceneUpdateWithoutAutoSync(api, { elements: converted, captureUpdate: CaptureUpdateAction.NEVER })
+    showToast(conflicts.length > 0
+      ? `Recovered unsaved work + merged remote changes (${conflicts.length} conflict(s) kept newer)`
+      : 'Recovered unsaved work from before the tab closed')
+    return true
+  }
 
   useEffect(() => {
     // Only check for server mode if the page is served from a server (not GitHub Pages static)
@@ -747,18 +853,33 @@ function App(): JSX.Element {
   // Close-flush listeners are attached ONCE (stable ref indirection).
   // Attaching per-render closures stacked duplicate listeners — every state
   // change added another pagehide flush, producing duplicate save commits.
+  // The GUARANTEE is the synchronous local journal (survives teardown); the
+  // network flush is best-effort only — keepalive bodies are capped (~64 KiB)
+  // and multi-request chains never complete during unload. Whatever doesn't
+  // make it over the network is restored + pushed on the next boot.
+  // visibilitychange(hidden) fires while the page is still alive, so its
+  // async push is the one that usually lands.
   const flushRef = useRef<() => void>(() => {})
+  const journalRef = useRef<() => void>(() => {})
   const serverModeRef = useRef(serverMode)
   serverModeRef.current = serverMode
   flushRef.current = () => {
     if (serverModeRef.current) void syncToBackend({ silent: true, keepalive: true })
     else void pushToGitHub(true)
   }
+  journalRef.current = () => journalScene()
   useEffect(() => {
-    const onVis = () => { if (document.hidden) flushRef.current() }
-    const onHide = () => { flushRef.current() }
+    const onVis = () => {
+      if (!document.hidden) return
+      journalRef.current()
+      flushRef.current()
+    }
+    const onHide = () => {
+      journalRef.current()
+      flushRef.current()
+    }
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      // Attempt autosave before page closes
+      journalRef.current()
       flushRef.current()
       // Show confirmation dialog only if there are unsaved changes
       if (ghDirty) {
@@ -832,6 +953,7 @@ function App(): JSX.Element {
       lastUpstreamRef.current = JSON.stringify(res.elements)
       baseElementsRef.current = res.elements
       setGhDirty(false)
+      clearLocalSnapshot(snapshotKeyFor(ghRepoRef.current))
       if (!isClosing && ((res.conflicts?.length || 0) > 0 || (res.added || 0) + (res.updated || 0) > 0)) {
         showToast(res.conflicts?.length
           ? `Saved + merged ${res.added! + res.updated!} remote change(s), ${res.conflicts!.length} conflict(s) kept newer`
@@ -938,6 +1060,11 @@ function App(): JSX.Element {
               excalidrawAPI?.addFiles(Object.values(filesResult.files))
             }
           }
+          // Recover journaled work that never reached the backend (tab closed
+          // before the sync went out), then push it up.
+          if (await restoreLocalSnapshot(result.elements || [])) {
+            setTimeout(() => { void syncToBackend({ silent: true }) }, 1500)
+          }
           return
         }
       }
@@ -955,7 +1082,13 @@ function App(): JSX.Element {
         baseElementsRef.current = scene.elements || []
         // keptLocal: boot-time strokes exist that upstream hasn't seen —
         // stay dirty so they get saved, never silently dropped.
-        setGhDirty(keptLocal)
+        // Recovered journal: unsaved work from before the tab closed — apply
+        // it over the baseline and push it up shortly.
+        const recovered = await restoreLocalSnapshot(scene.elements || [])
+        setGhDirty(keptLocal || recovered)
+        if (recovered) {
+          setTimeout(() => { void pushToGitHub(false) }, 1500)
+        }
       }
     } catch (error) {
       console.error('Error loading existing elements:', error)
@@ -1384,6 +1517,7 @@ function App(): JSX.Element {
         }
 
         setLastSyncTime(new Date())
+        clearLocalSnapshot(snapshotKeyFor(ghRepoRef.current))
 
         if (!silent) {
           setSyncStatus('success')
@@ -1570,15 +1704,17 @@ function App(): JSX.Element {
             viewModeEnabled={!serverMode && access !== 'editor'}
             excalidrawAPI={(api: ExcalidrawAPIRefValue) => setExcalidrawAPI(api)}
             onChange={() => {
-              if (serverMode) { scheduleAutoSync(); return }
+              if (serverMode) { scheduleAutoSync(); scheduleJournal(); return }
               if (suppressAutoSyncCountRef.current) return
               const api = excalidrawAPIRef.current
               if (!api) return
               const h = hashElements(api.getSceneElements().filter((el) => !el.isDeleted))
               if (lastPushedHashRef.current === null || h !== lastPushedHashRef.current) {
                 setGhDirty(true)
+                scheduleJournal()
               } else {
                 setGhDirty(false)
+                clearLocalSnapshot(snapshotKeyFor(ghRepoRef.current))
               }
             }}
             initialData={{

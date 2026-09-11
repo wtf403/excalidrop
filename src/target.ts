@@ -159,6 +159,7 @@ export async function commitNow(message?: string): Promise<{ sha: string; count:
     st.sha = e.freshSha;
     st.sha = await gh.putFile(repo, SCENE_PATH, buildDoc(), msg(), gh.CANVAS_BRANCH, st.sha || undefined);
   }
+  try { await gh.syncAssets(repo, st.files); } catch (e) { logger.warn('asset sync failed: ' + (e as Error).message); }
   st.dirty = false;
   logger.info(`Committed ${st.elements.size} elements to ${repo}`);
   return { sha: st.sha as string, count: st.elements.size };

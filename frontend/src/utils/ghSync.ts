@@ -281,11 +281,71 @@ export function threeWayMerge(base: any[], local: any[], remote: any[]): MergeRe
   return { merged, conflicts, added, updated };
 }
 
-function encodeSceneDoc(elements: unknown[]): string {
+function encodeSceneDoc(elements: unknown[], files?: unknown): string {
   return btoa(unescape(encodeURIComponent(JSON.stringify(
-    { type: 'excalidraw', version: 2, source: 'excalidrop', elements },
+    { type: 'excalidraw', version: 2, source: 'excalidrop', elements, ...(files ? { files } : {}) },
     null, 2,
   ))));
+}
+
+function extForMime(mime: string): string {
+  const map: Record<string, string> = {
+    'image/png': 'png', 'image/jpeg': 'jpg', 'image/jpg': 'jpg',
+    'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg',
+  };
+  return map[mime] || 'png';
+}
+
+function assetPathFor(id: string, mime: string): string {
+  return `assets/${id}.${extForMime(mime)}`;
+}
+
+// Commit each image binary to assets/ on the canvas branch so pasted images
+// exist as real files, not just base64 inside canvas.excalidraw. Skips files
+// that already exist upstream (checked via a single GET per file).
+async function syncAssets(
+  ref: RepoRef, token: string, files: unknown, keepalive: boolean,
+): Promise<void> {
+  const list: any[] = Array.isArray(files) ? files : Object.values((files as any) || {});
+  const withData = list.filter((f) => f?.id && typeof f?.dataURL === 'string' && f.dataURL.startsWith('data:'));
+  if (withData.length === 0) return;
+  await Promise.all(withData.map(async (f) => {
+    try {
+      // Binary images arrive base64-encoded; SVGs may arrive URL-encoded
+      // (data:image/svg+xml,... without ;base64). Normalize both to base64.
+      let mime: string, b64: string;
+      const m = /^data:([^;]+);base64,(.+)$/s.exec(f.dataURL);
+      if (m) {
+        mime = f.mimeType || m[1];
+        b64 = m[2];
+      } else {
+        const u = /^data:([^,]+),([\s\S]+)$/.exec(f.dataURL);
+        if (!u) return;
+        mime = f.mimeType || u[1].split(';')[0];
+        try {
+          b64 = btoa(unescape(encodeURIComponent(decodeURIComponent(u[2]))));
+        } catch { return; }
+      }
+      const assetPath = assetPathFor(f.id, mime);
+      // Skip if already committed.
+      try {
+        const head = await fetch(
+          `https://api.github.com/repos/${ref.owner}/${ref.repo}/contents/${assetPath}?ref=${ref.branch}`,
+          { cache: 'no-store', headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' } },
+        );
+        if (head.ok) return;
+      } catch { /* fall through to PUT */ }
+      await gh(`/repos/${ref.owner}/${ref.repo}/contents/${assetPath}`, token, {
+        method: 'PUT',
+        ...(keepalive ? { keepalive: true } : {}),
+        body: JSON.stringify({
+          message: `excalidrop: add image asset ${f.id}`,
+          content: b64,
+          branch: ref.branch,
+        }),
+      });
+    } catch { /* asset commit is best-effort; scene PUT still carries the dataURL */ }
+  }));
 }
 
 function decodeSceneDoc(b64: string): any | null {
@@ -296,12 +356,12 @@ function decodeSceneDoc(b64: string): any | null {
   }
 }
 
-async function readSceneFile(ref: RepoRef, token: string): Promise<{ sha: string; elements: any[] } | null> {
+async function readSceneFile(ref: RepoRef, token: string): Promise<{ sha: string; elements: any[]; files?: any } | null> {
   try {
     const cur = await gh(`/repos/${ref.owner}/${ref.repo}/contents/canvas.excalidraw?ref=${ref.branch}`, token);
     const doc = decodeSceneDoc(cur.content);
     if (!doc) return null;
-    return { sha: cur.sha as string, elements: Array.isArray(doc.elements) ? doc.elements : [] };
+    return { sha: cur.sha as string, elements: Array.isArray(doc.elements) ? doc.elements : [], files: doc.files };
   } catch {
     return null;
   }
@@ -309,7 +369,7 @@ async function readSceneFile(ref: RepoRef, token: string): Promise<{ sha: string
 
 async function putSceneFile(
   ref: RepoRef, token: string, elements: unknown[], message: string,
-  sha: string | undefined, keepalive: boolean,
+  sha: string | undefined, keepalive: boolean, files?: unknown,
 ): Promise<string> {
   // Close-flush (keepalive): single-flight PUT — skip the /user attribution
   // lookup so the save is ONE request that can survive page teardown.
@@ -326,7 +386,7 @@ async function putSceneFile(
     ...(keepalive ? { keepalive: true } : {}),
     body: JSON.stringify({
       message: author ? `${message} — ${author.name}` : message,
-      content: encodeSceneDoc(elements),
+      content: encodeSceneDoc(elements, files),
       branch: ref.branch,
       ...(sha ? { sha } : {}),
       ...(author ? { author, committer: author } : {}),
@@ -341,16 +401,22 @@ export async function pushScene(
   opts: { keepalive?: boolean; base?: any[]; sha?: string | null } = {},
 ): Promise<{ sha: string; elements: any[]; conflicts?: string[]; added?: number; updated?: number }> {
   const local = (scene.elements || []) as any[];
+  const files = (scene as any).files;
   const keepalive = opts.keepalive ?? false;
-  // Close-flush: fire a single PUT with the last-known sha — no prior GET.
+  // Commit image binaries to assets/ first (best-effort, skipped when
+  // already present). The scene PUT still embeds dataURLs so the viewer
+  // renders even before/without the asset files.
+  // Close-flush: fire PUTs with the last-known sha — no prior GET.
   // A 3-request chain (GET + /user + PUT) never survives page teardown.
   if (keepalive && opts.sha) {
-    const sha = await putSceneFile(ref, token, local, `excalidrop: autosync ${local.length} elements`, opts.sha, true);
+    await syncAssets(ref, token, files, true).catch(() => null);
+    const sha = await putSceneFile(ref, token, local, `excalidrop: autosync ${local.length} elements`, opts.sha, true, files);
     return { sha, elements: local };
   }
+  await syncAssets(ref, token, files, keepalive).catch(() => null);
   const cur = await readSceneFile(ref, token);
   try {
-    const sha = await putSceneFile(ref, token, local, `excalidrop: autosync ${local.length} elements`, cur?.sha, keepalive);
+    const sha = await putSceneFile(ref, token, local, `excalidrop: autosync ${local.length} elements`, cur?.sha, keepalive, files);
     return { sha, elements: local };
   } catch (e) {
     if (!String((e as Error).message).includes('409')) throw e;
@@ -366,7 +432,7 @@ export async function pushScene(
   const sha = await putSceneFile(
     ref, token, merged,
     `excalidrop: autosync ${local.length} elements (+${merged.length - local.length} merged)`,
-    fresh?.sha, keepalive,
+    fresh?.sha, keepalive, files,
   );
   return { sha, elements: merged, conflicts, added, updated };
 }
