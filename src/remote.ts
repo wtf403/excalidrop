@@ -3,7 +3,7 @@ import express, { type Express } from 'express';
 import dotenv from 'dotenv';
 import logger from './utils/logger.js';
 import { generateId } from './types.js';
-import { loadScene, saveScene, syncPages, allowedRepos, currentRepo, SCENE_PATH } from './utils/github.js';
+import { loadScene, allowedRepos, currentRepo, SCENE_PATH } from './utils/github.js';
 
 dotenv.config();
 const app: Express = express();
@@ -41,6 +41,26 @@ function need(req: any): ProjectState {
   if (!st) throw new Error('call use_project first for this session');
   return st;
 }
+
+// Pure content save with merge-on-conflict: if someone else committed
+// underneath us, fold their elements/files into the session map (ours win
+// per id) and retry once — saves compose, never wipe.
+async function saveMerged(st: ProjectState, msg: string): Promise<void> {
+  const gh = await import('./utils/github.js');
+  const els = () => Array.from(st.elements.values());
+  const files = () => Array.from(st.files.values());
+  try {
+    st.sha = await gh.saveScene(st.repo, els(), files(), st.sha, msg);
+  } catch (e) {
+    if (!(e instanceof gh.SceneConflictError)) throw e;
+    gh.unionIntoMap(st.elements, e.freshElements);
+    const freshFiles = Array.isArray((e as any).freshFiles) ? (e as any).freshFiles as any[] : [];
+    for (const f of freshFiles) if (f?.id && !st.files.has(f.id)) st.files.set(f.id, f);
+    st.sha = (e as any).freshSha;
+    st.sha = await gh.saveScene(st.repo, els(), files(), st.sha, msg);
+  }
+  st.dirty = false;
+}
 function scheduleCommit(st: ProjectState): void {
   if (commitTimer) clearTimeout(commitTimer);
   commitTimer = setTimeout(async () => {
@@ -48,10 +68,7 @@ function scheduleCommit(st: ProjectState): void {
     try {
       const els = Array.from(st.elements.values());
       const files = Array.from(st.files.values());
-      st.sha = await saveScene(st.repo, els, files, st.sha, `excalidrop: update ${els.length} elements`);
-      const cur = await import('./utils/github.js');
-      await cur.syncPages(st.repo, { type: 'excalidraw', version: 2, source: 'excalidrop', elements: els });
-      st.dirty = false;
+      await saveMerged(st, `excalidrop: update ${els.length} elements`);
     } catch (e) { logger.warn('commit failed: ' + (e as Error).message); }
   }, Number(process.env.COMMIT_DEBOUNCE_MS || 15000));
 }
@@ -60,9 +77,7 @@ app.post('/mcp/commit', async (req, res) => {
   try {
     const st = need(req);
     const els = Array.from(st.elements.values());
-    st.sha = await saveScene(st.repo, els, Array.from(st.files.values()), st.sha, req.body.message || `excalidrop: update ${els.length} elements`);
-    await syncPages(st.repo, { type: 'excalidraw', version: 2, source: 'excalidrop', elements: els });
-    st.dirty = false;
+    await saveMerged(st, req.body.message || `excalidrop: update ${els.length} elements`);
     res.json({ ok: true, sha: st.sha, count: els.length });
   } catch (e) { res.status(409).json({ error: (e as Error).message }); }
 });

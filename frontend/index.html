@@ -116,8 +116,8 @@
 
         .pill {
             position: fixed;
-            left: 64px;
-            top: 16px;
+            right: 64px;
+            bottom: 16px;
             height: 36px;
             display: flex;
             align-items: center;
@@ -128,12 +128,11 @@
             padding: 0 12px;
             font-size: 12px;
             color: #555;
-            z-index: 1000;
+            z-index: 100;
             box-shadow: none;
         }
 
-        /* Flat look: kill Excalidraw's button shadows so the top-left
-           row (hamburger + pill) reads as one inline block. */
+        /* Flat look for Excalidraw chrome around the pill. */
         .excalidraw button,
         .excalidraw .App-menu_top,
         .excalidraw .App-menu__left {
@@ -161,6 +160,34 @@
 
         .save-icon-btn:active {
             background: rgba(0,0,0,0.14);
+        }
+
+        .save-icon-btn.pull-available {
+            background: #ffd60a;
+            animation: pull-pulse 1.6s ease-in-out infinite;
+        }
+
+        @keyframes pull-pulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(255,214,10,0.6); }
+            50% { box-shadow: 0 0 0 6px rgba(255,214,10,0); }
+        }
+
+        .toast {
+            position: fixed;
+            left: 50%;
+            bottom: 16px;
+            transform: translateX(-50%);
+            max-width: min(520px, 90vw);
+            background: #1e1e1e;
+            color: #fff;
+            font-size: 12px;
+            padding: 8px 14px;
+            border-radius: 0.5em;
+            z-index: 100;
+            cursor: pointer;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
 

@@ -12,6 +12,8 @@ import type { ExcalidrawElement, NonDeleted, NonDeletedExcalidrawElement } from 
 import { convertMermaidToExcalidraw, DEFAULT_MERMAID_CONFIG } from './utils/mermaidConverter'
 import type { MermaidConfig } from '@excalidraw/mermaid-to-excalidraw'
 import { registerCanvasWebMCP } from './utils/webmcp'
+import { getAddLibraryUrls, removeHashParams } from './utils/ghSync'
+import { fetchLibraryItems } from './utils/library'
 
 
 type ExcalidrawAPIRefValue = ExcalidrawImperativeAPI;
@@ -271,11 +273,50 @@ function App(): JSX.Element {
     const handle = registerCanvasWebMCP(() => excalidrawAPIRef.current)
     return () => handle.cleanup()
   }, [excalidrawAPI])
+  // excalidraw.com-style `#addLibrary=<url>` deep links: fetch the
+  // .excalidrawlib and merge it into the built-in library (run once).
+  const libraryImportRef = useRef(false)
+  const [libraryError, setLibraryError] = useState<string | null>(null)
+  useEffect(() => {
+    if (!excalidrawAPI || libraryImportRef.current) return
+    const urls = getAddLibraryUrls()
+    if (urls.length === 0) return
+    libraryImportRef.current = true
+    ;(async () => {
+      try {
+        for (const url of urls) {
+          const items = await fetchLibraryItems(url)
+          await (excalidrawAPI as any).updateLibrary({
+            libraryItems: items,
+            merge: true,
+            openLibraryMenu: false,
+          })
+        }
+        setLibraryError(null)
+      } catch (e) {
+        setLibraryError(
+          `Could not load library: ${e instanceof Error ? e.message : String(e)}. Open it manually via Library → Open.`,
+        )
+      } finally {
+        removeHashParams('addLibrary')
+      }
+    })()
+  }, [excalidrawAPI])
   const [isConnected, setIsConnected] = useState<boolean>(false)
   const websocketRef = useRef<WebSocket | null>(null)
 
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('idle')
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null)
+  // Last pull failure, shown in the status pill so a stale canvas is
+  // diagnosable instead of silently stuck (e.g. expired token → 401).
+  const [syncError, setSyncError] = useState<string | null>(null)
+  const [toast, setToast] = useState<string | null>(null)
+  const [remoteAvailable, setRemoteAvailable] = useState<boolean>(false)
+  const baseElementsRef = useRef<any[]>([])
+  const showToast = (msg: string): void => {
+    setToast(msg)
+    setTimeout(() => setToast((t) => (t === msg ? null : t)), 4000)
+  }
   const autoSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const syncInFlightRef = useRef<boolean>(false)
   const suppressAutoSyncCountRef = useRef<number>(0)
@@ -321,6 +362,9 @@ function App(): JSX.Element {
   const [access, setAccess] = useState<'unknown' | 'editor' | 'viewer' | 'denied'>('unknown')
   const [ghLogin, setGhLogin] = useState<string>('')
   const [ghRepo, setGhRepo] = useState<import('./utils/ghSync').RepoRef | null>(null)
+  // Static identity (repo + token) finished resolving. Boot load waits for
+  // this — detectRepo runs after a dynamic import, a tick behind healthSettled.
+  const [staticReady, setStaticReady] = useState<boolean>(false)
   const [ghDirty, setGhDirty] = useState<boolean>(false)
   const ghShaRef = useRef<string | null>(null)
   const ghPushInFlightRef = useRef<boolean>(false)
@@ -328,6 +372,10 @@ function App(): JSX.Element {
   // this (not the canvas hash) so Excalidraw re-normalization noise
   // (versionNonce etc.) can never look like a remote change.
   const lastUpstreamRef = useRef<string | null>(null)
+  // Monotonic op counter: push increments on start/finish, pull snapshots it
+  // before fetching and aborts if it moved — so pull never applies a
+  // pre-push snapshot over just-pushed state (stale-fetch race).
+  const opSeqRef = useRef<number>(0)
 
   useEffect(() => {
     fetch('/api/health', { headers: authHeaders() }).then(r => {
@@ -346,7 +394,14 @@ function App(): JSX.Element {
     const gh = await import('./utils/ghSync')
     setGhRepo(gh.detectRepo())
     setGhToken(gh.getToken())
+    setStaticReady(true)
   }
+
+  // Deployed page title shows the repo canvas: "owner/repo".
+  // Runtime (not build-time) so one bundle serves every target repo.
+  useEffect(() => {
+    document.title = ghRepo ? `${ghRepo.owner}/${ghRepo.repo}` : 'Excalidrop Canvas'
+  }, [ghRepo])
 
   useEffect(() => {
     if (serverMode || !ghRepo) return
@@ -370,36 +425,107 @@ function App(): JSX.Element {
   // skipped while dirty or while a push is in flight, applied through the
   // no-autosync path so it can't push itself back, and compared against the
   // last-seen upstream content (not the canvas hash) to avoid churn.
+  // Cmd/Ctrl+S saves the canvas instead of opening the browser dialog.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault()
+        if (!serverMode && access === 'editor') void pushToGitHub(false)
+        else void syncToBackend()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverMode, access, excalidrawAPI])
+
+  // Manual Pull: fetch upstream, 3-way merge against base, apply without
+  // pushing. Never destroys local work — local-only ids are always kept.
+  const pullAndMerge = async (): Promise<void> => {
+    if (serverMode || !excalidrawAPI || !ghRepo) return
+    if (ghPushInFlightRef.current) return
+    try {
+      const gh = await import('./utils/ghSync')
+      const scene = await gh.loadStaticScene(ghRepo)
+      const remote = scene.elements || []
+      const api = excalidrawAPIRef.current
+      if (!api) return
+      const local = api.getSceneElements().map(cleanElementForExcalidraw)
+      const { merged, conflicts, added, updated } = gh.threeWayMerge(baseElementsRef.current, local, remote)
+      const converted = convertElementsPreservingImageProps(merged.map(cleanElementForExcalidraw))
+      applySceneUpdateWithoutAutoSync(api, { elements: converted, captureUpdate: CaptureUpdateAction.NEVER })
+      if (scene.files) api.addFiles(Object.values(scene.files))
+      baseElementsRef.current = merged
+      lastUpstreamRef.current = JSON.stringify(remote)
+      lastPushedHashRef.current = hashElements(api.getSceneElements().filter((el) => !el.isDeleted))
+      setRemoteAvailable(false)
+      setGhDirty(conflicts.length > 0 || hashElements(api.getSceneElements().filter((el) => !el.isDeleted)) !== lastPushedHashRef.current ? ghDirty : false)
+      showToast(conflicts.length > 0
+        ? `Pulled ${added + updated} change(s), ${conflicts.length} conflict(s) kept newer — review ids ${conflicts.slice(0, 3).join(', ')}`
+        : `Pulled ${added + updated} remote change(s)`)
+    } catch (error) {
+      console.error('Pull failed:', error)
+      setSyncError(`pull failed (${(error as Error).message.slice(0, 60)})`)
+    }
+  }
+
   const pullFromGitHub = async (): Promise<void> => {
     if (serverMode || !excalidrawAPI || !ghRepo) return
-    if (ghDirty || ghPushInFlightRef.current) return
+    if (ghPushInFlightRef.current) return
+    const wasDirty = ghDirty
+    const seq = opSeqRef.current
     try {
       let doc: { elements?: any[]; files?: Record<string, unknown> } | null = null
+      const failures: string[] = []
+      // 1. Authenticated Contents API (fresh raw bytes, works on private repos).
       if (ghToken) {
-        // Authenticated: raw file body in one call (fresh, bypasses Pages CDN).
         const res = await fetch(`https://api.github.com/repos/${ghRepo.owner}/${ghRepo.repo}/contents/canvas.excalidraw?ref=${ghRepo.branch}`, {
           cache: 'no-store',
           headers: { Authorization: `Bearer ${ghToken}`, Accept: 'application/vnd.github.raw' },
         }).catch(() => null)
-        if (!res?.ok) return
-        // Raw mode has no sha header — content compare below is the change check.
-        doc = await res.json().catch(() => null)
-      } else {
-        // Read-only viewer on a public repo: poll the raw git blob directly
-        // (live on commit, no Pages build in between; cache-buster beats the
-        // 300s edge TTL), falling back to the Pages-hosted copy.
-        const gh = await import('./utils/ghSync')
-        let res = await fetch(`${gh.rawSceneUrl(ghRepo)}?t=${Date.now()}`, { cache: 'no-store' }).catch(() => null)
-        if (!res?.ok) res = await fetch('./canvas.excalidraw', { cache: 'no-store' }).catch(() => null)
-        if (!res?.ok) return
-        doc = await res.json().catch(() => null)
+        if (res?.ok) {
+          doc = await res.json().catch(() => null)
+        } else if (res) {
+          // Token expired/revoked/scopes changed: fall through to the public
+          // blob instead of stalling the canvas silently.
+          failures.push(`api ${res.status}`)
+        }
       }
-      if (!doc) return
+      // 2. Public raw git blob (live on commit; cache-buster beats edge TTL).
+      if (!doc) {
+        const gh = await import('./utils/ghSync')
+        const res = await fetch(`${gh.rawSceneUrl(ghRepo)}?t=${Date.now()}`, { cache: 'no-store' }).catch(() => null)
+        if (res?.ok) {
+          doc = await res.json().catch(() => null)
+        } else if (res) {
+          failures.push(`blob ${res.status}`)
+        }
+      }
+      // 3. Pages-hosted copy (lags deploys — last resort only).
+      if (!doc) {
+        const res = await fetch('./canvas.excalidraw', { cache: 'no-store' }).catch(() => null)
+        if (res?.ok) doc = await res.json().catch(() => null)
+        else if (res) failures.push(`pages ${res.status}`)
+      }
+      if (!doc) {
+        setSyncError(failures.length > 0 ? `pull failed (${failures.join(', ')})` : 'pull failed (network)')
+        return
+      }
+      setSyncError(null)
+      // A push started or finished while we were fetching: our snapshot may
+      // predate it — drop it rather than regress just-pushed state.
+      if (seq !== opSeqRef.current || ghPushInFlightRef.current) return
       const up = doc.elements || []
       const upRaw = JSON.stringify(up)
       if (upRaw === lastUpstreamRef.current) return
+      // Remote moved while we have unsaved work: don't auto-apply (would
+      // fight the user's strokes) — surface the Pull button + a short toast.
+      if (wasDirty) {
+        setRemoteAvailable(true)
+        showToast(`Teammate updated canvas (+${Math.max(0, up.length - baseElementsRef.current.length)} elements) — Pull to merge`)
+        return
+      }
       // Re-check dirtiness after the await: the user may have drawn while fetching.
-      if (ghPushInFlightRef.current) return
       const api = excalidrawAPIRef.current
       if (!api) return
       const h = hashElements(api.getSceneElements().filter((el) => !el.isDeleted))
@@ -408,72 +534,104 @@ function App(): JSX.Element {
       applySceneUpdateWithoutAutoSync(api, { elements: converted, captureUpdate: CaptureUpdateAction.NEVER })
       if (doc.files) api.addFiles(Object.values(doc.files))
       lastUpstreamRef.current = upRaw
+      baseElementsRef.current = up
       lastPushedHashRef.current = hashElements(api.getSceneElements().filter((el) => !el.isDeleted))
       setGhDirty(false)
     } catch (error) {
       console.error('GitHub pull failed:', error)
+      setSyncError(`pull failed (${(error as Error).message.slice(0, 60)})`)
     }
   }
 
   useEffect(() => {
     if (serverMode) return
     const id = setInterval(() => { void pushToGitHub(false); void pullFromGitHub() }, 20000)
-    const flush = () => { void pushToGitHub(true) }
-    const guard = (e: BeforeUnloadEvent) => {
-      if (ghDirty || ghPushInFlightRef.current) { e.preventDefault() }
-    }
-    document.addEventListener('visibilitychange', () => { if (document.hidden) flush() })
-    window.addEventListener('pagehide', flush)
-    window.addEventListener('beforeunload', guard)
     return () => {
       clearInterval(id)
-      document.removeEventListener('visibilitychange', () => { })
-      window.removeEventListener('pagehide', flush)
-      window.removeEventListener('beforeunload', guard)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverMode, ghToken, ghRepo, ghDirty, excalidrawAPI, access])
 
+  // Close-flush listeners are attached ONCE (stable ref indirection).
+  // Attaching per-render closures stacked duplicate listeners — every state
+  // change added another pagehide flush, producing duplicate save commits.
+  const flushRef = useRef<() => void>(() => {})
+  flushRef.current = () => { void pushToGitHub(true) }
+  useEffect(() => {
+    if (serverMode) return
+    const onVis = () => { if (document.hidden) flushRef.current() }
+    const onHide = () => { flushRef.current() }
+    document.addEventListener('visibilitychange', onVis)
+    window.addEventListener('pagehide', onHide)
+    return () => {
+      document.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('pagehide', onHide)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverMode])
+
   const pushToGitHub = async (isClosing: boolean): Promise<void> => {
     if (serverMode || !excalidrawAPI || !ghToken || !ghRepo) return
     if (access !== 'editor') return
-    if ((!ghDirty && !isClosing) || ghPushInFlightRef.current) return
+    if (ghPushInFlightRef.current) return
+    // No baseline yet (load never completed and nothing ever pushed): we know
+    // nothing about upstream — writing now would be a blind overwrite. This
+    // is how fresh tabs wiped scenes with "0 elements" on close.
+    if (lastPushedHashRef.current === null) return
+    const api = excalidrawAPIRef.current
+    if (!api) return
+    const localElements = api.getSceneElements().filter(el => !el.isDeleted)
+    // Nothing unsaved — not even on close. Skipping avoids no-op commits.
+    // (A deliberate clear-canvas differs from baseline, so it still saves.)
+    if (hashElements(localElements) === lastPushedHashRef.current) {
+      setGhDirty(false)
+      return
+    }
     ghPushInFlightRef.current = true
+    opSeqRef.current += 1
     if (!isClosing) setSyncStatus('syncing')
     try {
       const gh = await import('./utils/ghSync')
-      const elements = excalidrawAPI.getSceneElements().filter(el => !el.isDeleted)
-      const files = excalidrawAPI.getFiles()
-      if (isClosing) {
-        // Best-effort synchronous flush on close, with one 409 retry:
-        // an in-flight autosync may have moved the sha under us.
-        const doc = {
-          message: `excalidrop: force-save on close (${elements.length} elements)`,
-          content: btoa(unescape(encodeURIComponent(JSON.stringify({ type: 'excalidraw', version: 2, source: 'excalidrop', elements }, null, 2)))),
-          branch: ghRepo.branch,
-        };
-        for (let attempt = 0; attempt < 2; attempt++) {
-          const cur = await fetch(`https://api.github.com/repos/${ghRepo.owner}/${ghRepo.repo}/contents/canvas.excalidraw?ref=${ghRepo.branch}`, {
-            cache: 'no-store',
-            headers: { Authorization: `Bearer ${ghToken}`, Accept: 'application/vnd.github+json' },
-          }).then(r => r.json()).catch(() => null)
-          const res = await fetch(`https://api.github.com/repos/${ghRepo.owner}/${ghRepo.repo}/contents/canvas.excalidraw`, {
-            method: 'PUT',
-            keepalive: true,
-            headers: { Authorization: `Bearer ${ghToken}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...doc, ...(cur?.sha ? { sha: cur.sha } : {}) }),
-          }).catch(() => null)
-          if (res && (res.ok || res.status !== 409)) break;
-        }
-      } else {
-        ghShaRef.current = await gh.pushScene(ghRepo, ghToken, { elements: elements as any, files: files as any })
-        lastPushedHashRef.current = hashElements(elements)
-        lastUpstreamRef.current = JSON.stringify(elements)
+      const files = api.getFiles()
+      // pushScene merges on 409 (local wins per id), so a stale tab can
+      // never wipe newer upstream work — not even on its way out. keepalive
+      // lets the close-flush survive page teardown.
+      const res = await gh.pushScene(
+        ghRepo, ghToken,
+        { elements: localElements as any, files: files as any },
+        { keepalive: isClosing, base: baseElementsRef.current },
+      ).catch(() => null)
+      if (!res) {
+        if (!isClosing) setSyncStatus('error')
+        return
+      }
+      ghShaRef.current = res.sha
+      // A conflict may have merged upstream-only elements in: apply them so
+      // the canvas converges instead of dropping them on the next save.
+      const have = new Set(localElements.map((e: any) => e.id))
+      const extras = res.elements.filter((e: any) => e?.id && !have.has(e.id))
+      if (extras.length > 0) {
+        const current = api.getSceneElements().map(cleanElementForExcalidraw)
+        applySceneUpdateWithoutAutoSync(api, {
+          elements: convertElementsPreservingImageProps([...current, ...extras.map(cleanElementForExcalidraw)]),
+          captureUpdate: CaptureUpdateAction.NEVER,
+        })
+      }
+      const finalEls = api.getSceneElements().filter(el => !el.isDeleted)
+      lastPushedHashRef.current = hashElements(finalEls)
+      lastUpstreamRef.current = JSON.stringify(res.elements)
+      baseElementsRef.current = res.elements
+      setGhDirty(false)
+      if (!isClosing && ((res.conflicts?.length || 0) > 0 || (res.added || 0) + (res.updated || 0) > 0)) {
+        showToast(res.conflicts?.length
+          ? `Saved + merged ${res.added! + res.updated!} remote change(s), ${res.conflicts!.length} conflict(s) kept newer`
+          : `Saved + merged ${res.added! + res.updated!} remote change(s)`)
+      }
+      if (!isClosing) {
         setLastSyncTime(new Date())
         setSyncStatus('success')
         setTimeout(() => setSyncStatus('idle'), 2000)
       }
-      setGhDirty(false)
     } catch (error) {
       console.error('GitHub push failed:', error)
       if (String((error as Error).message).includes('403') && ghRepo && ghToken) {
@@ -486,13 +644,12 @@ function App(): JSX.Element {
       if (!isClosing) setSyncStatus('error')
     } finally {
       ghPushInFlightRef.current = false
+      opSeqRef.current += 1
     }
   }
 
   useEffect(() => {
     if (excalidrawAPI) {
-      loadExistingElements()
-
       // Static (excalidrop branch) mode has no WebSocket server — never connect there,
       // otherwise it retries wss://<host>/ forever and spams the console.
       if (serverMode && !isConnected) {
@@ -500,6 +657,53 @@ function App(): JSX.Element {
       }
     }
   }, [excalidrawAPI, isConnected, serverMode])
+
+  // Apply initially loaded elements. If the user drew while the load was in
+  // flight, fold upstream in and keep every local stroke — boot must NEVER
+  // overwrite existing work with the downloaded version.
+  // Returns true when local unsaved work was kept (caller: stay dirty).
+  const applyLoadedElements = (converted: Partial<ExcalidrawElement>[]): boolean => {
+    const api = excalidrawAPIRef.current
+    if (!api) return false
+    const pre = api.getSceneElements().filter(el => !el.isDeleted)
+    if (pre.length > 0 && lastPushedHashRef.current !== null && hashElements(pre) !== lastPushedHashRef.current) {
+      const have = new Set(pre.map((e: any) => e.id))
+      const extras = converted.filter((e: any) => e?.id && !have.has(e.id))
+      if (extras.length > 0) {
+        applySceneUpdateWithoutAutoSync(api, {
+          elements: convertElementsPreservingImageProps([...pre.map(cleanElementForExcalidraw), ...extras]),
+          captureUpdate: CaptureUpdateAction.NEVER,
+        })
+      }
+      return true
+    }
+    applySceneUpdateWithoutAutoSync(api, {
+      elements: converted,
+      captureUpdate: CaptureUpdateAction.NEVER,
+    })
+    return false
+  }
+
+  // Boot scene load, exactly once — and only when we know WHERE to load from.
+  // Firing earlier (ghRepo still null) would seed the canvas from the stale
+  // Pages snapshot instead of the live blob, showing an outdated scene until
+  // the next poll tick heals it.
+  const bootLoadedRef = useRef<boolean>(false)
+  useEffect(() => {
+    if (!excalidrawAPI || bootLoadedRef.current) return
+    if (serverMode) {
+      bootLoadedRef.current = true
+      void loadExistingElements()
+      return
+    }
+    // Static mode: wait for repo identity (resolves a tick after health).
+    // ghRepo null + staticReady means a non-GitHub host — fall back to the
+    // local API / Pages copy, same as before.
+    if (!staticReady) return
+    bootLoadedRef.current = true
+    void loadExistingElements()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [excalidrawAPI, serverMode, ghRepo, staticReady])
 
   const loadExistingElements = async (): Promise<void> => {
     try {
@@ -510,10 +714,7 @@ function App(): JSX.Element {
           const cleanedElements = result.elements.map(cleanElementForExcalidraw)
           const convertedElements = convertElementsPreservingImageProps(cleanedElements)
           if (excalidrawAPI) {
-            applySceneUpdateWithoutAutoSync(excalidrawAPI, {
-              elements: convertedElements,
-              captureUpdate: CaptureUpdateAction.NEVER
-            })
+            applyLoadedElements(convertedElements)
           }
         }
         const filesResponse = await fetch('/api/files', { headers: authHeaders() })
@@ -527,10 +728,8 @@ function App(): JSX.Element {
       }
       const gh = await import('./utils/ghSync')
       const scene = await gh.loadStaticScene(ghRepo)
-      if (scene.elements.length > 0 && excalidrawAPI) {
-        const converted = convertElementsPreservingImageProps(scene.elements.map(cleanElementForExcalidraw))
-        applySceneUpdateWithoutAutoSync(excalidrawAPI, { elements: converted, captureUpdate: CaptureUpdateAction.NEVER })
-      }
+      const converted = convertElementsPreservingImageProps((scene.elements || []).map(cleanElementForExcalidraw))
+      const keptLocal = excalidrawAPI ? applyLoadedElements(converted) : false
       if (scene.files) excalidrawAPI?.addFiles(Object.values(scene.files))
       // Seed the baseline so pre-load onChange noise never marks us dirty.
       if (excalidrawAPI) {
@@ -538,7 +737,10 @@ function App(): JSX.Element {
           excalidrawAPI.getSceneElements().filter((el) => !el.isDeleted),
         )
         lastUpstreamRef.current = JSON.stringify(scene.elements || [])
-        setGhDirty(false)
+        baseElementsRef.current = scene.elements || []
+        // keptLocal: boot-time strokes exist that upstream hasn't seen —
+        // stay dirty so they get saved, never silently dropped.
+        setGhDirty(keptLocal)
       }
     } catch (error) {
       console.error('Error loading existing elements:', error)
@@ -1042,21 +1244,38 @@ function App(): JSX.Element {
       {/* Floating status pill (no header — canvas is fullscreen).
           No login UI: a token arrives silently (agent hands a #token= link
           or has stored one before); without it the canvas is read-only. */}
-      <div className="pill">
-        <div className={`status-dot ${(serverMode ? isConnected : access === 'editor') ? 'status-connected' : 'status-disconnected'}`}></div>
+      <footer id="contentinfo">
+      <div className="pill" title={libraryError || syncError || undefined}>
+        <div className={`status-dot ${(serverMode ? isConnected : access === 'editor') && !syncError ? 'status-connected' : 'status-disconnected'}`}></div>
         <span>
           {serverMode
             ? (isConnected ? 'Live' : 'Offline')
             : access === 'unknown'
               ? 'Checking access…'
-              : access === 'editor'
+              : libraryError || syncError || (access === 'editor'
                 ? (syncStatus === 'syncing' ? 'Saving…' : ghDirty ? 'Unsaved changes' : lastSyncTime ? `Saved ${formatSyncTime(lastSyncTime)}${ghLogin ? ` · ${ghLogin}` : ''}` : `Can edit${ghLogin ? ` · ${ghLogin}` : ''}`)
-                : 'Read-only'}
+                : 'Read-only')}
         </span>
         {!serverMode && access === 'editor' && (
+          <>
+          {remoteAvailable && (
+            <button
+              className="save-icon-btn pull-available"
+              title="Pull teammate changes"
+              aria-label="Pull teammate changes"
+              onClick={() => { void pullAndMerge() }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <polyline points="17 1 21 5 17 9" />
+                <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+                <polyline points="7 23 3 19 7 15" />
+                <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+              </svg>
+            </button>
+          )}
           <button
             className="save-icon-btn"
-            title="Save now"
+            title="Save now (Cmd/Ctrl+S)"
             aria-label="Save now"
             onClick={() => { void pushToGitHub(false) }}
           >
@@ -1066,8 +1285,15 @@ function App(): JSX.Element {
               <polyline points="7 3 7 8 15 8" />
             </svg>
           </button>
+          </>
         )}
       </div>
+      {toast && (
+        <div className="toast" role="status" onClick={() => setToast(null)}>
+          <span>{toast}</span>
+        </div>
+      )}
+      </footer>
 
       {/* Canvas Container */}
       <div className="canvas-container">

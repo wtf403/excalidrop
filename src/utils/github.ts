@@ -33,6 +33,40 @@ export const CANVAS_BRANCH = process.env.CANVAS_BRANCH || 'excalidrop';
 // Pages build; saves are a single Contents-API PUT, no per-save side calls.
 export const PAGES_BRANCH = process.env.PAGES_BRANCH || 'excalidrop';
 
+export class SceneConflictError extends Error {
+  freshSha: string | null;
+  freshElements: any[] | null;
+  freshFiles: unknown;
+  constructor(freshSha: string | null, freshElements: any[] | null, freshFiles?: unknown) {
+    super('CONFLICT: scene changed upstream, merged retry required');
+    this.name = 'SceneConflictError';
+    this.freshSha = freshSha;
+    this.freshElements = freshElements;
+    this.freshFiles = freshFiles;
+  }
+}
+
+// Union of two element lists by id. `incoming` (local) wins per id; ids only
+// upstream are preserved. Same contract as the frontend's mergeSceneElements:
+// concurrent saves compose instead of last-writer-wins wiping creations.
+// Limitation: a locally deleted element is resurrected if still upstream at
+// conflict time — re-delete afterwards; creations are never lost.
+export function mergeSceneElements(base: any[], incoming: any[]): any[] {
+  const byId = new Map<string, any>();
+  for (const el of base) if (el?.id) byId.set(el.id, el);
+  for (const el of incoming) if (el?.id) byId.set(el.id, el);
+  return Array.from(byId.values());
+}
+
+// Fold upstream-only elements into a live element map (local wins per id).
+// Call after catching SceneConflictError, then retry the save with freshSha.
+export function unionIntoMap(map: Map<string, any>, freshElements: any[] | null | undefined): void {
+  if (!freshElements) return;
+  for (const el of freshElements) {
+    if (el?.id && !map.has(el.id)) map.set(el.id, el);
+  }
+}
+
 export function allowedRepos(): string[] {
   const list = (process.env.ALLOWED_REPOS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
   if (list.length) return list;
@@ -81,14 +115,16 @@ export async function putFile(repo: string, path: string, data: any, message: st
     r = await fetch(`${API}/repos/${repo}/contents/${path}`, { method: 'PUT', headers: headers(), body: JSON.stringify(body) });
   }
   if (r.status === 409) {
-    // Another writer (viewer tab, second agent) landed first. Refetch the
-    // fresh sha and retry once instead of failing — otherwise the in-memory
-    // state keeps the stale sha and every later autosync fails identically.
+    // Someone else committed underneath us. NEVER blindly overwrite with a
+    // fresh sha — that silently wipes their work (the 60→1→0 scene wipes).
+    // Throw so the caller merges upstream into its live map and retries.
     const fresh = await getFile(repo, path, branch).catch(() => null);
-    if (!fresh?.sha) throw new Error('CONFLICT: file changed upstream, refetch sha and retry');
-    body.sha = fresh.sha;
-    r = await fetch(`${API}/repos/${repo}/contents/${path}`, { method: 'PUT', headers: headers(), body: JSON.stringify(body) });
-    if (r.status === 409) throw new Error('CONFLICT: file changed upstream again, retry commit');
+    const freshDoc = fresh?.content as any;
+    throw new SceneConflictError(
+      fresh?.sha || null,
+      Array.isArray(freshDoc?.elements) ? freshDoc.elements : null,
+      freshDoc?.files,
+    );
   }
   if (r.status === 422 && !sha) {
 
@@ -96,7 +132,15 @@ export async function putFile(repo: string, path: string, data: any, message: st
     if (!existing?.sha) throw new Error(`GitHub put 422: ${(await r.text()).slice(0, 200)}`);
     body.sha = existing.sha;
     r = await fetch(`${API}/repos/${repo}/contents/${path}`, { method: 'PUT', headers: headers(), body: JSON.stringify(body) });
-    if (r.status === 409) throw new Error('CONFLICT: file changed upstream, refetch sha and retry');
+    if (r.status === 409) {
+      const fresh = await getFile(repo, path, branch).catch(() => null);
+      const freshDoc = fresh?.content as any;
+      throw new SceneConflictError(
+        fresh?.sha || null,
+        Array.isArray(freshDoc?.elements) ? freshDoc.elements : null,
+        freshDoc?.files,
+      );
+    }
   }
   if (!r.ok) throw new Error(`GitHub put ${r.status}: ${await r.text()}`);
   const j = await r.json() as any;
@@ -116,6 +160,9 @@ export async function saveScene(repo: string, elements: any[], files: any[], sha
 }
 
 export async function syncPages(repo: string, scene: any): Promise<void> {
+  // SETUP-TIME ONLY — never call from autosync/commit hot paths.
+  // Saves are pure Contents-API PUTs; the viewer is deployed ONCE by the
+  // Actions workflow and reads the scene from the git blob at runtime.
   assertRepo(repo);
   if (!token()) throw new Error('GITHUB_TOKEN missing');
   // The scene file is written to CANVAS_BRANCH by saveScene/putFile and the

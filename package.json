@@ -89,6 +89,7 @@
     "dist/**/*",
     "frontend/**/*",
     "scripts/**/*",
+    "templates/**/*",
     "skills/**/*",
     "*.d.ts",
     "README.md",

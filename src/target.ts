@@ -76,7 +76,7 @@ export function parseRepo(input: string): string {
 }
 
 
-const scenes = new Map<string, { elements: Map<string, ServerElement>; sha: string | null; dirty: boolean }>();
+const scenes = new Map<string, { elements: Map<string, ServerElement>; files: any[]; sha: string | null; dirty: boolean }>();
 let timer: ReturnType<typeof setTimeout> | null = null;
 const SCENE_PATH = process.env.SCENE_PATH || 'canvas.excalidraw';
 
@@ -104,18 +104,19 @@ async function ensureLoaded(repo: string) {
   await gh.ensureMainBranch(repo);
   
   const r = await fetch(`https://api.github.com/repos/${repo}/contents/${SCENE_PATH}?ref=${gh.CANVAS_BRANCH}`, { headers: headers(), signal: AbortSignal.timeout(20000) });
-  st = { elements: new Map(), sha: null, dirty: false };
+  st = { elements: new Map(), files: [], sha: null, dirty: false };
   if (r.ok) {
     const j = await r.json() as any;
     const doc = JSON.parse(Buffer.from(j.content, 'base64').toString('utf8'));
     for (const el of doc.elements || []) st.elements.set(el.id, el);
+    st.files = Array.isArray(doc.files) ? doc.files : (doc.files ? [doc.files] : []);
     st.sha = j.sha;
   }
   scenes.set(repo, st);
   return st;
 }
 
-function current(): { elements: Map<string, ServerElement>; sha: string | null; dirty: boolean } {
+function current(): { elements: Map<string, ServerElement>; files: any[]; sha: string | null; dirty: boolean } {
   if (active.kind !== 'remote') throw new Error('not in remote mode');
   const st = scenes.get(active.repo);
   if (!st) throw new Error('call switch_remote first');
@@ -132,19 +133,35 @@ export async function commitNow(message?: string): Promise<{ sha: string; count:
   if (active.kind !== 'remote') throw new Error('not in remote mode');
   const repo = active.repo;
   const st = current();
-  const elements = Array.from(st.elements.values());
-  const doc = { type: 'excalidraw', version: 2, source: 'excalidrop', elements };
   const gh = await import('./utils/github.js');
-  // Hot path is a single PUT — no Pages/metadata/build side calls per save
-  // (one-time setup covers those; the viewer reads the raw blob directly).
-  const newSha = await gh.putFile(repo, SCENE_PATH, doc, message || `excalidrop: update ${elements.length} elements`, gh.CANVAS_BRANCH, st.sha || undefined);
-  st.sha = newSha;
-  st.dirty = false;
+  // Hot path is a single Contents-API PUT — nothing else per save.
+  // The viewer is deployed ONCE via the Actions workflow installed by
+  // `setup`/`publish`, and reads canvas.excalidraw straight from the git
+  // blob at runtime. Never trigger Pages builds or viewer redeploys here,
+  // otherwise every autosync queues a "pages build and deployment" run.
+  const buildDoc = () => ({
+    type: 'excalidraw', version: 2, source: 'excalidrop',
+    elements: Array.from(st.elements.values()),
+    ...(st.files?.length ? { files: st.files } : {}),
+  });
+  const msg = () => message || `excalidrop: update ${st.elements.size} elements`;
   try {
-    await gh.syncPages(repo, doc);
-  } catch (e) { logger.warn('post-commit viewer check failed: ' + (e as Error).message); }
-  logger.info(`Committed ${elements.length} elements to ${repo}`);
-  return { sha: st.sha as string, count: elements.length };
+    st.sha = await gh.putFile(repo, SCENE_PATH, buildDoc(), msg(), gh.CANVAS_BRANCH, st.sha || undefined);
+  } catch (e) {
+    // Someone else committed underneath us: fold their elements into the live
+    // map (ours win per id) and retry once, so the save ADDS our changes to
+    // canvas.excalidraw instead of wiping theirs.
+    if (!(e instanceof gh.SceneConflictError)) throw e;
+    gh.unionIntoMap(st.elements, e.freshElements);
+    if ((!st.files || st.files.length === 0) && e.freshFiles) {
+      st.files = Array.isArray(e.freshFiles) ? e.freshFiles : [e.freshFiles];
+    }
+    st.sha = e.freshSha;
+    st.sha = await gh.putFile(repo, SCENE_PATH, buildDoc(), msg(), gh.CANVAS_BRANCH, st.sha || undefined);
+  }
+  st.dirty = false;
+  logger.info(`Committed ${st.elements.size} elements to ${repo}`);
+  return { sha: st.sha as string, count: st.elements.size };
 }
 
 

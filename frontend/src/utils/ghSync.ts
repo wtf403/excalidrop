@@ -33,15 +33,66 @@ export function rawSceneUrl(ref: RepoRef): string {
 
 const TOKEN_KEY = 'excalidrop_gh_token';
 
-export function getToken(): string | null {
+/** Parse `#a=b&c=d` style hash regardless of param order. */
+export function parseHashParams(): URLSearchParams {
+  const h = window.location.hash.startsWith('#')
+    ? window.location.hash.slice(1)
+    : window.location.hash;
+  // URLSearchParams handles decoding; a bare `#token=xyz` still works.
+  try {
+    return new URLSearchParams(h);
+  } catch {
+    return new URLSearchParams();
+  }
+}
 
-  if (window.location.hash.startsWith('#token=')) {
-    const t = decodeURIComponent(window.location.hash.slice('#token='.length));
-    if (t) {
-      localStorage.setItem(TOKEN_KEY, t);
-      history.replaceState(null, '', window.location.pathname + window.location.search);
-      return t;
+/** Remove consumed keys from the hash, preserving anything not yet handled. */
+export function removeHashParams(...keys: string[]): void {
+  try {
+    const p = parseHashParams();
+    let changed = false;
+    for (const k of keys) {
+      if (p.has(k)) {
+        p.delete(k);
+        changed = true;
+      }
     }
+    if (!changed) return;
+    const rest = p.toString();
+    const url = window.location.pathname + window.location.search + (rest ? `#${rest}` : '');
+    history.replaceState(null, '', url);
+  } catch {
+    /* non-fatal */
+  }
+}
+
+export function getAddLibraryUrls(): string[] {
+  const out: string[] = [];
+  try {
+    const p = parseHashParams();
+    for (const v of p.getAll('addLibrary')) {
+      if (v) out.push(v);
+      // Support comma-separated lists like excalidraw.com share links.
+      // getAll above already returns the whole value, so split it here.
+      if (v?.includes(',')) {
+        const parts = v.split(',').map((s) => s.trim()).filter(Boolean);
+        out.pop();
+        out.push(...parts);
+      }
+    }
+  } catch {
+    /* non-fatal */
+  }
+  return out.filter(Boolean);
+}
+
+export function getToken(): string | null {
+  const t = parseHashParams().get('token');
+  if (t) {
+    localStorage.setItem(TOKEN_KEY, t);
+    // Keep addLibrary (not yet consumed) so the library effect can read it.
+    removeHashParams('token');
+    return t;
   }
   return localStorage.getItem(TOKEN_KEY);
 }
@@ -67,41 +118,166 @@ async function gh(path: string, token: string, init?: RequestInit): Promise<any>
 }
 
 
-export async function pushScene(
-  ref: RepoRef, token: string, scene: { elements: unknown[]; files?: Record<string, unknown> },
-): Promise<string> {
-  const path = 'canvas.excalidraw';
-  const content = btoa(unescape(encodeURIComponent(JSON.stringify(
-    { type: 'excalidraw', version: 2, source: 'excalidrop', elements: scene.elements },
+// Union of two element lists by id. `incoming` wins per id; ids only in
+// `base` are preserved. Used on 409 conflicts so concurrent writers compose
+// instead of last-writer-wins wiping the other side's work.
+// Limitation: an element deleted locally is resurrected if it still exists
+// upstream at conflict time — re-delete afterwards; creations are never lost.
+export function mergeSceneElements(base: any[], incoming: any[]): any[] {
+  return threeWayMerge(base, base, incoming).merged;
+}
+
+function elTime(el: any): number {
+  const t = el?.updatedAt ?? el?.createdAt;
+  const n = typeof t === 'number' ? t : Date.parse(String(t ?? ''));
+  return Number.isFinite(n) ? n : 0;
+}
+
+// Semantic per-element signature. Ignores Excalidraw re-normalization noise
+// (versionNonce, seed, selection) so remote polls don't look like changes.
+export function elementSig(el: any): string {
+  try {
+    return JSON.stringify([
+      el.id, el.version, el.x, el.y, el.width, el.height, el.angle,
+      el.text, el.originalText, el.points, el.isDeleted,
+      el.containerId, el.boundElements, el.groupIds, el.link,
+      el.backgroundColor, el.strokeColor, el.fontSize,
+    ]);
+  } catch { return String(el?.id); }
+}
+
+export interface MergeResult {
+  merged: any[];
+  conflicts: string[]; // ids edited on both sides with different content
+  added: number;       // upstream-only ids folded in
+  updated: number;     // upstream-newer ids that overwrote local
+}
+
+// 3-way merge: base = last synced snapshot, local = canvas, remote = upstream.
+// - Unchanged on one side → take the other side.
+// - Changed identically → keep either.
+// - Changed differently (same id) → newer updatedAt wins, id in conflicts.
+// - Deleted on one side + edited on the other → edit wins (resurrect), id in
+//   conflicts so the UI can let the user re-delete.
+export function threeWayMerge(base: any[], local: any[], remote: any[]): MergeResult {
+  const b = new Map<string, any>(); for (const el of base || []) if (el?.id) b.set(el.id, el);
+  const l = new Map<string, any>(); for (const el of local || []) if (el?.id) l.set(el.id, el);
+  const r = new Map<string, any>(); for (const el of remote || []) if (el?.id) r.set(el.id, el);
+  const merged: any[] = [];
+  const conflicts: string[] = [];
+  let added = 0, updated = 0;
+  for (const id of new Set([...b.keys(), ...l.keys(), ...r.keys()])) {
+    const be = b.get(id), le = l.get(id), re = r.get(id);
+    if (le && !re) {
+      if (be && elementSig(be) !== elementSig(le)) {
+        merged.push(re ?? le); // remote deleted, local edited → edit wins
+        conflicts.push(id);
+      } else merged.push(le); // created locally or deleted remotely untouched
+      continue;
+    }
+    if (!le && re) {
+      if (be && elementSig(be) !== elementSig(re)) {
+        merged.push(re); // local deleted, remote edited → edit wins
+        conflicts.push(id);
+      } else merged.push(re); // created remotely or deleted locally untouched
+      if (!be) added++;
+      continue;
+    }
+    if (!le && !re) continue; // deleted both sides
+    // present both sides
+    const bs = be ? elementSig(be) : null;
+    const ls = elementSig(le), rs = elementSig(re);
+    if (ls === rs) { merged.push(le); continue; }
+    if (bs === null || bs === rs) { merged.push(le); continue; } // remote untouched
+    if (bs === ls) { merged.push(re); updated++; continue; }     // local untouched
+    const winner = elTime(re) >= elTime(le) ? re : le; // both edited → newer wins
+    merged.push(winner);
+    if (winner === re) updated++;
+    conflicts.push(id);
+  }
+  return { merged, conflicts, added, updated };
+}
+
+function encodeSceneDoc(elements: unknown[]): string {
+  return btoa(unescape(encodeURIComponent(JSON.stringify(
+    { type: 'excalidraw', version: 2, source: 'excalidrop', elements },
     null, 2,
   ))));
-  // Retry once on 409: another tab/agent commit landed between our sha read
-  // and PUT, so refetch the fresh sha and try again.
-  let lastErr: unknown = null;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    let sha: string | undefined;
-    try {
-      const cur = await gh(`/repos/${ref.owner}/${ref.repo}/contents/${path}?ref=${ref.branch}`, token);
-      sha = cur.sha;
-    } catch {}
-    const body: any = {
-      message: `excalidrop: autosync ${scene.elements.length} elements`,
-      content,
-      branch: ref.branch,
-    };
-    if (sha) body.sha = sha;
-    try {
-      const out = await gh(`/repos/${ref.owner}/${ref.repo}/contents/${path}`, token, {
-        method: 'PUT',
-        body: JSON.stringify(body),
-      });
-      return out.content.sha as string;
-    } catch (e) {
-      lastErr = e;
-      if (!String((e as Error).message).includes('409')) throw e;
-    }
+}
+
+function decodeSceneDoc(b64: string): any | null {
+  try {
+    return JSON.parse(decodeURIComponent(escape(atob(b64.replace(/\n/g, '')))));
+  } catch {
+    return null;
   }
-  throw lastErr;
+}
+
+async function readSceneFile(ref: RepoRef, token: string): Promise<{ sha: string; elements: any[] } | null> {
+  try {
+    const cur = await gh(`/repos/${ref.owner}/${ref.repo}/contents/canvas.excalidraw?ref=${ref.branch}`, token);
+    const doc = decodeSceneDoc(cur.content);
+    if (!doc) return null;
+    return { sha: cur.sha as string, elements: Array.isArray(doc.elements) ? doc.elements : [] };
+  } catch {
+    return null;
+  }
+}
+
+async function putSceneFile(
+  ref: RepoRef, token: string, elements: unknown[], message: string,
+  sha: string | undefined, keepalive: boolean,
+): Promise<string> {
+  // Attribute the commit to the actual GitHub user behind the token, not the
+  // OAuth app: Contents API defaults author/committer to the token owner only
+  // when omitted in some flows — set explicitly from /user.
+  let author: { name: string; email: string } | undefined;
+  try {
+    const me = await gh('/user', token);
+    if (me?.login) author = { name: me.login, email: `${me.login}@users.noreply.github.com` };
+  } catch { /* fall back to token-owner default */ }
+  const out = await gh(`/repos/${ref.owner}/${ref.repo}/contents/canvas.excalidraw`, token, {
+    method: 'PUT',
+    ...(keepalive ? { keepalive: true } : {}),
+    body: JSON.stringify({
+      message: author ? `${message} — ${author.name}` : message,
+      content: encodeSceneDoc(elements),
+      branch: ref.branch,
+      ...(sha ? { sha } : {}),
+      ...(author ? { author, committer: author } : {}),
+    }),
+  });
+  return out.content.sha as string;
+}
+
+
+export async function pushScene(
+  ref: RepoRef, token: string, scene: { elements: unknown[]; files?: Record<string, unknown> },
+  opts: { keepalive?: boolean; base?: any[] } = {},
+): Promise<{ sha: string; elements: any[]; conflicts?: string[]; added?: number; updated?: number }> {
+  const local = (scene.elements || []) as any[];
+  const keepalive = opts.keepalive ?? false;
+  const cur = await readSceneFile(ref, token);
+  try {
+    const sha = await putSceneFile(ref, token, local, `excalidrop: autosync ${local.length} elements`, cur?.sha, keepalive);
+    return { sha, elements: local };
+  } catch (e) {
+    if (!String((e as Error).message).includes('409')) throw e;
+  }
+  // Conflict: someone else committed underneath us. 3-way rebase against the
+  // last synced base: disjoint regions compose silently, same-id double-edits
+  // go to the newer updatedAt, delete-vs-edit keeps the edit and reports the
+  // id so the UI can let the user re-delete.
+  const fresh = await readSceneFile(ref, token);
+  const { merged, conflicts, added, updated } = threeWayMerge(
+    opts.base || [], local, fresh?.elements || [],
+  );
+  const sha = await putSceneFile(
+    ref, token, merged,
+    `excalidrop: autosync ${local.length} elements (+${merged.length - local.length} merged)`,
+    fresh?.sha, keepalive,
+  );
+  return { sha, elements: merged, conflicts, added, updated };
 }
 
 

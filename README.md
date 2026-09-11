@@ -71,13 +71,13 @@ Excalidraw now has an [official MCP](https://github.com/excalidraw/excalidraw-mc
 
 ```bash
 npm i -D excalidrop
-npx excalidrop setup  # gh auth check → publishes viewer to gh-pages → app-install link → verifies live
+npx excalidrop setup  # gh auth check → publishes viewer to excalidrop → app-install link → verifies live
 ```
 
 `setup` walks you through the whole flow on **any repo you own or can access**:
 
 1. **Checks `gh auth`** (log in with `gh auth login` first — 2FA via GitHub).
-2. **Publishes an empty canvas** to your repo's `gh-pages` branch and enables Pages.
+2. **Publishes an empty canvas** to your repo's `excalidrop` branch and enables Pages (Actions deploy, once — later saves never redeploy).
 3. **Prints the one-time app-install link** (`github.com/apps/<app>/installations/new`) — installing the GitHub App on the repo is what grants canvas access. Repo access == canvas access: collaborators with write can edit, readers get view-only, everyone else gets a login wall.
 4. **Verifies** the viewer + scene are actually serving.
 5. Prints your canvas URL. In your agent, run `switch_remote { target: "<that URL>" }` once — it's remembered per-project in `.excalidrop.json`, so subsequent sessions skip it and draw directly. Commits land on GitHub; the viewer updates itself. Human edits in the browser autosync every 10s with a force-save on close.
