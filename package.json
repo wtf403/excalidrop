@@ -18,11 +18,9 @@
     "dev": "concurrently \"npm run dev:server\" \"vite\"",
     "dev:server": "npx tsc --watch",
     "production": "npm run build && npm run canvas",
-    "postinstall": "node scripts/postinstall.mjs",
     "prepare": "npm run build",
     "excalidrop": "node dist/cli.js",
     "prepublishOnly": "npm run build",
-    "test:bind": "npm run build:server && node scripts/check-local-bind.mjs",
     "type-check": "npx tsc --noEmit"
   },
   "dependencies": {
@@ -89,7 +87,6 @@
     "src/**/*",
     "dist/**/*",
     "frontend/**/*",
-    "scripts/**/*",
     "templates/**/*",
     "skills/**/*",
     "*.d.ts",

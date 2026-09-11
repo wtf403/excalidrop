@@ -24,7 +24,7 @@ export function currentRepo(): string {
 export const SCENE_PATH = process.env.SCENE_PATH || 'canvas.excalidraw';
 
 // The branch that serves the Pages site AND holds the scene file.
-// Must match the frontend's detectRepo() (ghSync.ts) and scripts/publish-pages.sh.
+// Must match the frontend's detectRepo() (ghSync.ts).
 export const CANVAS_BRANCH = process.env.CANVAS_BRANCH || 'excalidrop';
 
 // Branch GitHub Pages serves. Same as CANVAS_BRANCH by default so the viewer

@@ -261,15 +261,7 @@ async function cmdInit(args: string[]): Promise<void> {
     } else {
       const pub = await prompt(`Publish an empty canvas to ${slug} (creates excalidrop + enables Pages)? [Y/n] `);
       if (!pub || /^(y|yes)$/i.test(pub)) {
-        const r = spawnSync('bash', [path.join(__dirname, '../scripts/publish-pages.sh')], {
-          stdio: 'inherit', env: { ...process.env, REPO_SLUG: slug },
-        });
-        if (r.status === 0) {
-          const [owner, repo] = slug.split('/');
-          console.log(`\nCanvas live at https://${owner}.github.io/${repo}/`);
-          const appSlug = process.env.EXCALIDROP_APP_SLUG || 'excalidrop';
-          console.log(`Install the app once per repo: https://github.com/apps/${appSlug}/installations/new`);
-        }
+        console.error('excalidrop: publishing was removed with scripts/publish-pages.sh — skipping.');
       }
     }
   }
@@ -416,11 +408,8 @@ async function cmdSetup(args: string[]): Promise<void> {
       console.log(`Note: the Excalidrop app isn't installed on ${slug} yet — browser login stays read-only until it is:\n     https://github.com/apps/${appSlug}/installations/new\n`);
     }
   } catch { /* non-fatal */ }
-  // 2. publish viewer (auto-enables Pages, auto-syncs scene)
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn('bash', [path.join(__dirname, '../scripts/publish-pages.sh')], { stdio: 'inherit', env: { ...process.env, REPO_SLUG: slug } });
-    child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`publish failed (exit ${code})`))));
-  });
+  // 2. publish viewer — removed with scripts/publish-pages.sh
+  throw new Error('excalidrop: `setup` publishing was removed with scripts/publish-pages.sh.');
   // 3. remember the target: agent auto-loads it, no switch_remote needed
   try {
     const cfgFile = path.join(process.cwd(), CONFIG_NAME);
@@ -520,8 +509,8 @@ async function main(): Promise<void> {
       await cmdLogin();
       break;
     case 'publish': {
-      const child = spawn('bash', [path.join(__dirname, '../scripts/publish-pages.sh')], { stdio: 'inherit', env: process.env });
-      child.on('exit', (code) => process.exit(code ?? 0));
+      console.error('excalidrop: `publish` was removed with scripts/publish-pages.sh.');
+      process.exit(1);
       break;
     }
     case 'add':
