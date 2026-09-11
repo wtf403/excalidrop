@@ -281,9 +281,22 @@ export async function pushScene(
 }
 
 
-export async function loadStaticScene(ref?: RepoRef): Promise<{ elements: any[]; files?: Record<string, unknown> }> {
-  // Prefer the raw git blob (live the moment a save commits, no Pages build
-  // in between); fall back to the Pages-served copy.
+export async function loadStaticScene(ref?: RepoRef, token?: string | null): Promise<{ elements: any[]; files?: Record<string, unknown> }> {
+  // Authenticated Contents API FIRST: raw.githubusercontent.com has a ~300s
+  // edge TTL, so the raw blob serves stale data right after a save. The API
+  // returns the live bytes on every read.
+  if (ref && token) {
+    try {
+      const res = await fetch(`https://api.github.com/repos/${ref.owner}/${ref.repo}/contents/canvas.excalidraw?ref=${ref.branch}`, {
+        cache: 'no-store',
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github.raw' },
+      });
+      if (res.ok) {
+        const j = await res.json();
+        if (j && Array.isArray(j.elements)) return { elements: j.elements, files: j.files || {} };
+      }
+    } catch { /* fall through to raw blob */ }
+  }
   if (ref) {
     try {
       const r = await fetch(`${rawSceneUrl(ref)}?t=${Date.now()}`, { cache: 'no-store' });

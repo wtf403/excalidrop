@@ -426,16 +426,19 @@ function App(): JSX.Element {
   // no-autosync path so it can't push itself back, and compared against the
   // last-seen upstream content (not the canvas hash) to avoid churn.
   // Cmd/Ctrl+S saves the canvas instead of opening the browser dialog.
+  // Capture phase: Excalidraw stops propagation of handled keys, so a bubble
+  // listener on window never fires while the canvas has focus.
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+      if ((e.metaKey || e.ctrlKey) && (e.code === 'KeyS' || e.key.toLowerCase() === 's')) {
         e.preventDefault()
+        e.stopPropagation()
         if (!serverMode && access === 'editor') void pushToGitHub(false)
         else void syncToBackend()
       }
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverMode, access, excalidrawAPI])
 
@@ -446,7 +449,7 @@ function App(): JSX.Element {
     if (ghPushInFlightRef.current) return
     try {
       const gh = await import('./utils/ghSync')
-      const scene = await gh.loadStaticScene(ghRepo)
+      const scene = await gh.loadStaticScene(ghRepo, ghToken)
       const remote = scene.elements || []
       const api = excalidrawAPIRef.current
       if (!api) return
@@ -727,7 +730,7 @@ function App(): JSX.Element {
         return
       }
       const gh = await import('./utils/ghSync')
-      const scene = await gh.loadStaticScene(ghRepo)
+      const scene = await gh.loadStaticScene(ghRepo, ghToken)
       const converted = convertElementsPreservingImageProps((scene.elements || []).map(cleanElementForExcalidraw))
       const keptLocal = excalidrawAPI ? applyLoadedElements(converted) : false
       if (scene.files) excalidrawAPI?.addFiles(Object.values(scene.files))
