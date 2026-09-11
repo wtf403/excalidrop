@@ -136,8 +136,8 @@
     {
       "id": "yh66MoBvS0GFjM-nCo26Z",
       "type": "image",
-      "x": 508.228,
-      "y": 541.5,
+      "x": 508.485993195105,
+      "y": 541.7579931951049,
       "width": 595.544,
       "height": 493,
       "angle": 0,
@@ -153,10 +153,10 @@
       "index": "a5",
       "roundness": null,
       "seed": 544980596,
-      "versionNonce": 1263760972,
+      "versionNonce": 1106650968,
       "isDeleted": false,
       "boundElements": null,
-      "updated": 1789170099584,
+      "updated": 1789170404968,
       "link": null,
       "locked": false,
       "status": "pending",
@@ -166,7 +166,7 @@
         1
       ],
       "crop": null,
-      "version": 1
+      "version": 2
     },
     {
       "id": "uscpuukdK16S3e2Sv8Rov",
