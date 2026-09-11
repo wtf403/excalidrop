@@ -94,12 +94,95 @@ export function getToken(): string | null {
     removeHashParams('token');
     return t;
   }
-  return localStorage.getItem(TOKEN_KEY);
+  return getStoredToken()?.token ?? null;
 }
 
-export function setToken(t: string | null): void {
-  if (t) localStorage.setItem(TOKEN_KEY, t);
-  else localStorage.removeItem(TOKEN_KEY);
+export function setToken(t: string | null, refresh_token?: string | null, expires_in_sec?: number | null): void {
+  try {
+    if (!t) {
+      localStorage.removeItem(TOKEN_KEY);
+      return;
+    }
+    if (refresh_token || expires_in_sec) {
+      const store: TokenStore = {
+        token: t,
+        ...(refresh_token ? { refresh_token } : {}),
+        ...(expires_in_sec ? { expires_at: Date.now() + expires_in_sec * 1000 } : {}),
+      };
+      localStorage.setItem(TOKEN_KEY, JSON.stringify(store));
+    } else {
+      localStorage.setItem(TOKEN_KEY, t);
+    }
+  } catch { /* storage unavailable — session-only */ }
+}
+
+interface TokenStore {
+  token: string;
+  refresh_token?: string;
+  expires_at?: number;
+}
+
+/** Read the stored credential, accepting both the legacy bare token string
+ *  and the JSON store written by setToken with refresh data. */
+export function getStoredToken(): TokenStore | null {
+  try {
+    const raw = localStorage.getItem(TOKEN_KEY);
+    if (!raw) return null;
+    if (raw.trimStart().startsWith('{')) {
+      const s = JSON.parse(raw) as TokenStore;
+      return s?.token ? s : null;
+    }
+    return { token: raw };
+  } catch {
+    return null;
+  }
+}
+
+export interface DeviceToken {
+  token: string;
+  refresh_token?: string;
+  expires_in?: number;
+}
+
+/** Exchange a refresh token for a fresh access-token pair. Returns null when
+ *  the refresh token itself is dead (revoked / never used for 6 months). */
+export async function refreshAccessToken(clientId: string, refreshToken: string): Promise<DeviceToken | null> {
+  try {
+    const r = await fetch('https://github.com/login/oauth/access_token', {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_id: clientId,
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+      }),
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!j.access_token) return null;
+    return {
+      token: j.access_token as string,
+      ...(j.refresh_token ? { refresh_token: j.refresh_token as string } : {}),
+      ...(j.expires_in ? { expires_in: Number(j.expires_in) } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Renew the stored credential when we have a refresh token and the access
+ *  token is expired (or expiring within `marginMs`). Persists the new pair
+ *  and returns the fresh access token, or null when renewal isn't possible. */
+export async function tryRefreshToken(clientId: string, opts: { force?: boolean; marginMs?: number } = {}): Promise<string | null> {
+  const stored = getStoredToken();
+  if (!stored?.refresh_token) return null;
+  const margin = opts.marginMs ?? 10 * 60 * 1000;
+  const expiring = !stored.expires_at || stored.expires_at - Date.now() < margin;
+  if (!opts.force && !expiring) return stored.token;
+  const next = await refreshAccessToken(clientId, stored.refresh_token);
+  if (!next) return null;
+  setToken(next.token, next.refresh_token ?? stored.refresh_token, next.expires_in ?? null);
+  return next.token;
 }
 
 async function gh(path: string, token: string, init?: RequestInit): Promise<any> {
@@ -358,7 +441,7 @@ export async function pollDeviceToken(
   clientId: string,
   session: Pick<DeviceFlowSession, 'device_code' | 'interval' | 'expires_at'>,
   signal?: AbortSignal,
-): Promise<string> {
+): Promise<DeviceToken> {
   let interval = session.interval;
   for (;;) {
     if (signal?.aborted) throw new DOMException('Login cancelled', 'AbortError');
@@ -376,7 +459,13 @@ export async function pollDeviceToken(
     });
     if (!r.ok) throw new Error('Login polling failed');
     const j = await r.json();
-    if (j.access_token) return j.access_token as string;
+    if (j.access_token) {
+      return {
+        token: j.access_token as string,
+        ...(j.refresh_token ? { refresh_token: j.refresh_token as string } : {}),
+        ...(j.expires_in ? { expires_in: Number(j.expires_in) } : {}),
+      };
+    }
     if (j.error === 'authorization_pending') continue;
     if (j.error === 'slow_down') {
       interval += 5;

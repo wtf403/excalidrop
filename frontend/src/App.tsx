@@ -410,6 +410,10 @@ function App(): JSX.Element {
     document.title = ghRepo ? `${ghRepo.owner}/${ghRepo.repo}` : 'Excalidrop Canvas'
   }, [ghRepo])
 
+  // Token already refreshed for this credential (avoids a refresh retry loop
+  // when the refresh token itself is dead — then manual re-login is needed).
+  const refreshedForRef = useRef<string | null>(null)
+
   useEffect(() => {
     if (serverMode || !ghRepo) return
     if (!ghToken) { setAccess('denied'); setAccessDetail(null); setGhLogin(''); return }
@@ -417,7 +421,23 @@ function App(): JSX.Element {
     void (async () => {
       try {
         const gh = await import('./utils/ghSync')
-        const { access: a, login, detail } = await gh.checkAccess(ghRepo, ghToken)
+        // Proactive renewal: access tokens live ~8h; with a stored refresh
+        // token this is invisible, otherwise the canvas drops to read-only.
+        const fresh = await gh.tryRefreshToken(gh.CLIENT_ID)
+        const token = fresh || ghToken
+        if (fresh && fresh !== ghToken) {
+          setGhToken(fresh)
+          return // effect re-runs with the new token
+        }
+        const { access: a, login, detail } = await gh.checkAccess(ghRepo, token)
+        if (detail === 'expired' && refreshedForRef.current !== token) {
+          refreshedForRef.current = token
+          const renewed = await gh.tryRefreshToken(gh.CLIENT_ID, { force: true })
+          if (renewed) {
+            setGhToken(renewed)
+            return // effect re-runs with the new token
+          }
+        }
         setAccess(a)
         setAccessDetail(detail)
         setGhLogin(login)
@@ -466,10 +486,11 @@ function App(): JSX.Element {
     void (async () => {
       try {
         const gh = await import('./utils/ghSync')
-        const token = await gh.pollDeviceToken(gh.CLIENT_ID, loginSession, abort.signal)
-        gh.setToken(token)
+        const creds = await gh.pollDeviceToken(gh.CLIENT_ID, loginSession, abort.signal)
+        gh.setToken(creds.token, creds.refresh_token ?? null, creds.expires_in ?? null)
         gh.saveFlowSession(null)
-        setGhToken(token)
+        refreshedForRef.current = null
+        setGhToken(creds.token)
         setLoginOpen(false)
         setLoginSession(null)
         showToast('Logged in — canvas unlocked')
