@@ -74,7 +74,7 @@ app.get('/api/auth/login', (req, res) => {
   const cid = process.env.GITHUB_CLIENT_ID;
   if (!cid) return res.status(500).json({ success: false, error: 'GITHUB_CLIENT_ID not configured' });
   const redirect = `${req.protocol}://${req.get('host')}/api/auth/callback`;
-  const url = `https://github.com/login/oauth/authorize?client_id=${cid}&redirect_uri=${encodeURIComponent(redirect)}&scope=read:user`;
+  const url = `https://github.com/login/oauth/authorize?client_id=${cid}&redirect_uri=${encodeURIComponent(redirect)}&scope=read:user,repo`;
   res.redirect(url);
 });
 app.get('/api/auth/callback', async (req, res) => {
