@@ -360,6 +360,13 @@ function App(): JSX.Element {
   const [serverMode, setServerMode] = useState<boolean>(false)
   const [ghToken, setGhToken] = useState<string | null>(null)
   const [access, setAccess] = useState<'unknown' | 'editor' | 'viewer' | 'denied'>('unknown')
+  const [accessDetail, setAccessDetail] = useState<import('./utils/ghSync').AccessDetail>(null)
+  // Device-flow re-login (token expired/revoked and there is no other login
+  // UI — without this the canvas degrades to read-only with no recovery).
+  const [loginOpen, setLoginOpen] = useState<boolean>(false)
+  const [loginSession, setLoginSession] = useState<import('./utils/ghSync').DeviceFlowSession | null>(null)
+  const [loginError, setLoginError] = useState<string | null>(null)
+  const loginAbortRef = useRef<AbortController | null>(null)
   const [ghLogin, setGhLogin] = useState<string>('')
   const [ghRepo, setGhRepo] = useState<import('./utils/ghSync').RepoRef | null>(null)
   // Static identity (repo + token) finished resolving. Boot load waits for
@@ -405,20 +412,77 @@ function App(): JSX.Element {
 
   useEffect(() => {
     if (serverMode || !ghRepo) return
-    if (!ghToken) { setAccess('denied'); setGhLogin(''); return }
+    if (!ghToken) { setAccess('denied'); setAccessDetail(null); setGhLogin(''); return }
     setAccess('unknown')
     void (async () => {
       try {
         const gh = await import('./utils/ghSync')
-        const { access: a, login } = await gh.checkAccess(ghRepo, ghToken)
+        const { access: a, login, detail } = await gh.checkAccess(ghRepo, ghToken)
         setAccess(a)
+        setAccessDetail(detail)
         setGhLogin(login)
-      } catch {
+      } catch (e) {
+        // Network failure vs dead token: gh() embeds the HTTP status, so a
+        // 401 here still means expired — offer re-login, not a dead end.
+        const expired = String((e as Error)?.message || '').includes('401')
         setAccess('denied')
+        setAccessDetail(expired ? 'expired' : null)
         setGhLogin('')
       }
     })()
   }, [serverMode, ghToken, ghRepo])
+
+  // Device-flow login: show code → user approves on github.com → poll for the
+  // token → store it → the access effect above re-runs and restores editing.
+  const startLogin = async (): Promise<void> => {
+    setLoginError(null)
+    try {
+      const gh = await import('./utils/ghSync')
+      if (!gh.HAS_CLIENT_ID) {
+        setLoginError('No GitHub OAuth client configured in this build.')
+        return
+      }
+      const s = gh.loadFlowSession() || await gh.startDeviceFlowFull(gh.CLIENT_ID)
+      gh.saveFlowSession(s)
+      setLoginSession(s)
+      setLoginOpen(true)
+    } catch (e) {
+      setLoginError((e as Error).message || 'Login failed to start.')
+    }
+  }
+
+  const cancelLogin = (): void => {
+    loginAbortRef.current?.abort()
+    loginAbortRef.current = null
+    setLoginOpen(false)
+    setLoginSession(null)
+    setLoginError(null)
+  }
+
+  useEffect(() => {
+    if (!loginOpen || !loginSession) return
+    const abort = new AbortController()
+    loginAbortRef.current = abort
+    void (async () => {
+      try {
+        const gh = await import('./utils/ghSync')
+        const token = await gh.pollDeviceToken(gh.CLIENT_ID, loginSession, abort.signal)
+        gh.setToken(token)
+        gh.saveFlowSession(null)
+        setGhToken(token)
+        setLoginOpen(false)
+        setLoginSession(null)
+        showToast('Logged in — canvas unlocked')
+      } catch (e) {
+        if ((e as Error).name === 'AbortError') return
+        setLoginError((e as Error).message || 'Login failed.')
+      } finally {
+        if (loginAbortRef.current === abort) loginAbortRef.current = null
+      }
+    })()
+    return () => abort.abort()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loginOpen, loginSession])
 
   // Static mode has no WebSocket, so poll GitHub for changes the agent (or
   // another tab) committed and apply them live. Never clobbers local edits:
@@ -1257,8 +1321,22 @@ function App(): JSX.Element {
               ? 'Checking access…'
               : libraryError || syncError || (access === 'editor'
                 ? (syncStatus === 'syncing' ? 'Saving…' : ghDirty ? 'Unsaved changes' : lastSyncTime ? `Saved ${formatSyncTime(lastSyncTime)}${ghLogin ? ` · ${ghLogin}` : ''}` : `Can edit${ghLogin ? ` · ${ghLogin}` : ''}`)
-                : 'Read-only')}
+                : accessDetail === 'expired' ? 'Session expired' : 'Read-only')}
         </span>
+        {!serverMode && access === 'denied' && (
+          <button
+            className="save-icon-btn"
+            title={accessDetail === 'expired' ? 'Session expired — log in again' : 'Log in with GitHub to edit'}
+            aria-label="Log in with GitHub"
+            onClick={() => { void startLogin() }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
+              <polyline points="10 17 15 12 10 7" />
+              <line x1="15" y1="12" x2="3" y2="12" />
+            </svg>
+          </button>
+        )}
         {!serverMode && access === 'editor' && (
           <>
           {remoteAvailable && (
@@ -1294,6 +1372,22 @@ function App(): JSX.Element {
       {toast && (
         <div className="toast" role="status" onClick={() => setToast(null)}>
           <span>{toast}</span>
+        </div>
+      )}
+      {loginOpen && loginSession && (
+        <div className="login-panel" role="dialog" aria-label="Log in with GitHub">
+          <div className="login-title">Log in with GitHub</div>
+          <div className="login-hint">
+            Open{' '}
+            <a href={loginSession.verification_uri} target="_blank" rel="noreferrer">
+              {loginSession.verification_uri.replace('https://', '')}
+            </a>{' '}
+            and enter this code:
+          </div>
+          <div className="login-code">{loginSession.user_code}</div>
+          <div className="login-hint">Waiting for approval…</div>
+          {loginError && <div className="login-error">{loginError}</div>}
+          <button className="login-cancel" onClick={cancelLogin}>Cancel</button>
         </div>
       )}
       </footer>

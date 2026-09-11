@@ -190,6 +190,58 @@
             text-overflow: ellipsis;
         }
 
+        .login-panel {
+            position: fixed;
+            left: 50%;
+            bottom: 60px;
+            transform: translateX(-50%);
+            background: #fff;
+            color: #1e1e1e;
+            font-size: 13px;
+            padding: 16px 20px;
+            border-radius: 0.75em;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.25);
+            z-index: 100;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            min-width: 260px;
+        }
+
+        .login-title {
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .login-hint {
+            color: #555;
+            font-size: 12px;
+        }
+
+        .login-code {
+            font-size: 28px;
+            font-weight: 700;
+            letter-spacing: 4px;
+            font-variant-numeric: tabular-nums;
+            user-select: all;
+        }
+
+        .login-error {
+            color: #c82333;
+            font-size: 12px;
+        }
+
+        .login-cancel {
+            background: #ececf4;
+            color: #1e1e1e;
+            border-radius: 0.5em;
+        }
+
+        .login-cancel:hover {
+            background: rgba(0,0,0,0.08);
+        }
+
 
 
         .api-panel {

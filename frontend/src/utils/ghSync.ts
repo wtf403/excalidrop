@@ -416,11 +416,24 @@ export type AccessDetail =
   | 'app-not-installed' // ghu_ token, but the user has no app installation reaching this repo
   | 'repo-not-covered' // installation(s) exist, but none of them include this repo
   | 'no-token-permissions' // classic token with no read access to the repo
+  | 'expired' // the stored token is dead (401 on /user): re-login, don't re-explain install
   | null; // editor/viewer — no problem to report
 
 
 export async function checkAccess(ref: RepoRef, token: string): Promise<{ access: Access; login: string; detail: AccessDetail }> {
-  const me = await gh('/user', token);
+  // Device-flow (ghu_) tokens expire after ~8h. A dead token 401s here — call
+  // it 'expired' so the UI offers re-login instead of a misleading
+  // install-the-app explanation. This throw previously surfaced as a bare
+  // exception and the caller mapped EVERYTHING to denied.
+  let me: any = null;
+  try {
+    me = await gh('/user', token);
+  } catch (e) {
+    if (String((e as Error).message).includes('401')) {
+      return { access: 'denied', login: '', detail: 'expired' };
+    }
+    throw e;
+  }
   const login = (me.login || '') as string;
   const wanted = `${ref.owner}/${ref.repo}`.toLowerCase();
 
