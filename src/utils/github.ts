@@ -80,7 +80,16 @@ export async function putFile(repo: string, path: string, data: any, message: st
     else delete body.sha;
     r = await fetch(`${API}/repos/${repo}/contents/${path}`, { method: 'PUT', headers: headers(), body: JSON.stringify(body) });
   }
-  if (r.status === 409) throw new Error('CONFLICT: file changed upstream, refetch sha and retry');
+  if (r.status === 409) {
+    // Another writer (viewer tab, second agent) landed first. Refetch the
+    // fresh sha and retry once instead of failing — otherwise the in-memory
+    // state keeps the stale sha and every later autosync fails identically.
+    const fresh = await getFile(repo, path, branch).catch(() => null);
+    if (!fresh?.sha) throw new Error('CONFLICT: file changed upstream, refetch sha and retry');
+    body.sha = fresh.sha;
+    r = await fetch(`${API}/repos/${repo}/contents/${path}`, { method: 'PUT', headers: headers(), body: JSON.stringify(body) });
+    if (r.status === 409) throw new Error('CONFLICT: file changed upstream again, retry commit');
+  }
   if (r.status === 422 && !sha) {
 
     const existing = await getFile(repo, path, branch).catch(() => null);

@@ -324,6 +324,10 @@ function App(): JSX.Element {
   const [ghDirty, setGhDirty] = useState<boolean>(false)
   const ghShaRef = useRef<string | null>(null)
   const ghPushInFlightRef = useRef<boolean>(false)
+  // Raw upstream elements last applied/pushed/loaded. Pull compares against
+  // this (not the canvas hash) so Excalidraw re-normalization noise
+  // (versionNonce etc.) can never look like a remote change.
+  const lastUpstreamRef = useRef<string | null>(null)
 
   useEffect(() => {
     fetch('/api/health', { headers: authHeaders() }).then(r => {
@@ -361,9 +365,55 @@ function App(): JSX.Element {
     })()
   }, [serverMode, ghToken, ghRepo])
 
+  // Static mode has no WebSocket, so poll GitHub for changes the agent (or
+  // another tab) committed and apply them live. Never clobbers local edits:
+  // skipped while dirty or while a push is in flight, applied through the
+  // no-autosync path so it can't push itself back, and compared against the
+  // last-seen upstream content (not the canvas hash) to avoid churn.
+  const pullFromGitHub = async (): Promise<void> => {
+    if (serverMode || !excalidrawAPI || !ghRepo) return
+    if (ghDirty || ghPushInFlightRef.current) return
+    try {
+      let doc: { elements?: any[]; files?: Record<string, unknown> } | null = null
+      if (ghToken) {
+        // Authenticated: raw file body in one call (fresh, bypasses Pages CDN).
+        const res = await fetch(`https://api.github.com/repos/${ghRepo.owner}/${ghRepo.repo}/contents/canvas.excalidraw?ref=${ghRepo.branch}`, {
+          cache: 'no-store',
+          headers: { Authorization: `Bearer ${ghToken}`, Accept: 'application/vnd.github.raw' },
+        }).catch(() => null)
+        if (!res?.ok) return
+        // Raw mode has no sha header — content compare below is the change check.
+        doc = await res.json().catch(() => null)
+      } else {
+        // Read-only viewer on a public repo: poll the Pages-hosted scene file.
+        const res = await fetch('./canvas.excalidraw', { cache: 'no-store' }).catch(() => null)
+        if (!res?.ok) return
+        doc = await res.json().catch(() => null)
+      }
+      if (!doc) return
+      const up = doc.elements || []
+      const upRaw = JSON.stringify(up)
+      if (upRaw === lastUpstreamRef.current) return
+      // Re-check dirtiness after the await: the user may have drawn while fetching.
+      if (ghPushInFlightRef.current) return
+      const api = excalidrawAPIRef.current
+      if (!api) return
+      const h = hashElements(api.getSceneElements().filter((el) => !el.isDeleted))
+      if (h !== lastPushedHashRef.current) return // local edits landed meanwhile — push owns this tick
+      const converted = convertElementsPreservingImageProps(up.map(cleanElementForExcalidraw))
+      applySceneUpdateWithoutAutoSync(api, { elements: converted, captureUpdate: CaptureUpdateAction.NEVER })
+      if (doc.files) api.addFiles(Object.values(doc.files))
+      lastUpstreamRef.current = upRaw
+      lastPushedHashRef.current = hashElements(api.getSceneElements().filter((el) => !el.isDeleted))
+      setGhDirty(false)
+    } catch (error) {
+      console.error('GitHub pull failed:', error)
+    }
+  }
+
   useEffect(() => {
     if (serverMode) return
-    const id = setInterval(() => { void pushToGitHub(false) }, 10000)
+    const id = setInterval(() => { void pushToGitHub(false); void pullFromGitHub() }, 10000)
     const flush = () => { void pushToGitHub(true) }
     const guard = (e: BeforeUnloadEvent) => {
       if (ghDirty || ghPushInFlightRef.current) { e.preventDefault() }
@@ -414,6 +464,7 @@ function App(): JSX.Element {
       } else {
         ghShaRef.current = await gh.pushScene(ghRepo, ghToken, { elements: elements as any, files: files as any })
         lastPushedHashRef.current = hashElements(elements)
+        lastUpstreamRef.current = JSON.stringify(elements)
         setLastSyncTime(new Date())
         setSyncStatus('success')
         setTimeout(() => setSyncStatus('idle'), 2000)
@@ -482,6 +533,7 @@ function App(): JSX.Element {
         lastPushedHashRef.current = hashElements(
           excalidrawAPI.getSceneElements().filter((el) => !el.isDeleted),
         )
+        lastUpstreamRef.current = JSON.stringify(scene.elements || [])
         setGhDirty(false)
       }
     } catch (error) {
