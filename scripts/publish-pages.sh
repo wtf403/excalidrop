@@ -5,10 +5,18 @@ set -euo pipefail
 PKG_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPO="${REPO_SLUG:-$(git config --get remote.origin.url | sed -E -e 's/\.git$//' -e 's#.*github.com[:/]##')}"
 echo "Repo: $REPO"
+# CI support: GITHUB_TOKEN can't push cross-repo and CI has no SSH key, so
+# when CANVAS_DEPLOY_TOKEN is present use an HTTPS remote (pass the same
+# value as GH_TOKEN for the gh calls below). Local runs keep SSH as before.
+if [ -n "${CANVAS_DEPLOY_TOKEN:-}" ]; then
+  GIT_REMOTE="https://x-access-token:${CANVAS_DEPLOY_TOKEN}@github.com/${REPO}.git"
+else
+  GIT_REMOTE="git@github.com:${REPO}.git"
+fi
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK" "${MAIN_WORK:-}"' EXIT
 npm --prefix "$PKG_DIR" run build:frontend >/dev/null
-git clone --depth 1 --branch excalidrop "git@github.com:${REPO}.git" "$WORK" 2>/dev/null || { git init -b excalidrop "$WORK"; git -C "$WORK" remote add origin "git@github.com:${REPO}.git"; }
+git clone --depth 1 --branch excalidrop "${GIT_REMOTE}" "$WORK" 2>/dev/null || { git init -b excalidrop "$WORK"; git -C "$WORK" remote add origin "${GIT_REMOTE}"; }
 # Drop stale build output (hashed asset names change every build) so the
 # branch doesn't accumulate dead bundles. Scene + .git are preserved.
 find "$WORK" -mindepth 1 -maxdepth 1 ! -name '.git' ! -name 'canvas.excalidraw' -exec rm -rf {} +
@@ -39,7 +47,7 @@ if ! gh api "repos/${REPO}/git/ref/heads/main" >/dev/null 2>&1; then
   # but setup puts NO files there (no canvas, no README). The canvas
   # lives on excalidrop until the agent's first draw commits it.
   git -C "$SEED" -c user.name=excalidrop -c user.email=excalidrop@local commit --allow-empty -m "init main" --quiet
-  git -C "$SEED" remote add origin "git@github.com:${REPO}.git"
+  git -C "$SEED" remote add origin "${GIT_REMOTE}"
   git -C "$SEED" push origin main >/dev/null
   rm -rf "$SEED"
   if [ "$(gh api "repos/${REPO}" --jq '.default_branch' 2>/dev/null)" != "main" ]; then
@@ -51,7 +59,7 @@ fi
 # the excalidrop branch never trigger it (the template has no push triggers
 # by design — the viewer reads canvas.excalidraw from the git blob at runtime).
 MAIN_WORK=$(mktemp -d)
-git clone --depth 1 --branch main "git@github.com:${REPO}.git" "$MAIN_WORK" 2>/dev/null
+git clone --depth 1 --branch main "${GIT_REMOTE}" "$MAIN_WORK" 2>/dev/null
 mkdir -p "$MAIN_WORK/.github/workflows"
 cp "$PKG_DIR/templates/excalidrop-canvas.yml" "$MAIN_WORK/.github/workflows/excalidrop-canvas.yml"
 git -C "$MAIN_WORK" add -A
