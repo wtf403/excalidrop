@@ -100,6 +100,7 @@ export default {
         client_secret: env.GITHUB_CLIENT_SECRET,
         code,
         redirect_uri,
+        scope: 'repo',
       }),
     }).catch(() => null);
     const j = await r?.json().catch(() => null);
