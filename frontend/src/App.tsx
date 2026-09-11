@@ -11,7 +11,6 @@ import {
 import type { ExcalidrawElement, NonDeleted, NonDeletedExcalidrawElement } from '@excalidraw/excalidraw/types/element/types'
 import { convertMermaidToExcalidraw, DEFAULT_MERMAID_CONFIG } from './utils/mermaidConverter'
 import type { MermaidConfig } from '@excalidraw/mermaid-to-excalidraw'
-import { APP_INSTALL_URL } from './utils/ghSync'
 import { registerCanvasWebMCP } from './utils/webmcp'
 
 
@@ -82,7 +81,9 @@ interface ApiResponse {
 
 type SyncStatus = 'idle' | 'syncing' | 'success' | 'error';
 const authHeaders = (): Record<string, string> => {
-  const t = localStorage.getItem('excalidrop_token');
+  // Static (gh-pages) mode stores the user token under excalidrop_gh_token
+  // (see utils/ghSync); server mode uses excalidrop_token. Accept both.
+  const t = localStorage.getItem('excalidrop_gh_token') || localStorage.getItem('excalidrop_token');
   return t ? { Authorization: `Bearer ${t}` } : {};
 };
 const AUTO_SYNC_DEBOUNCE_MS = 1200;
@@ -281,14 +282,31 @@ function App(): JSX.Element {
   const userInteractedRef = useRef<boolean>(false)
 
   const applySceneUpdateWithoutAutoSync = (
+    target: ExcalidrawImperativeAPI | null,
     scene: Parameters<ExcalidrawImperativeAPI['updateScene']>[0]
   ): void => {
+    if (!target) return
     suppressAutoSyncCountRef.current += 1
-    api.updateScene(scene)
+    target.updateScene(scene)
     setTimeout(() => {
       suppressAutoSyncCountRef.current = Math.max(0, suppressAutoSyncCountRef.current - 1)
     }, 0)
   }
+
+  // Content hash of the editable scene. Dirty state is derived from it, so
+  // spurious Excalidraw onChange events (mount, font load, view changes)
+  // can never stick the pill on "Unsaved changes".
+  const hashElements = (els: readonly unknown[]): string => {
+    try {
+      return JSON.stringify((els as any[]).map((e) => [
+        e.id, e.version, e.versionNonce, e.x, e.y, e.width, e.height,
+        e.text, e.originalText, e.points, e.isDeleted,
+      ]))
+    } catch {
+      return ''
+    }
+  }
+  const lastPushedHashRef = useRef<string | null>(null)
 
   useEffect(() => {
     return () => {
@@ -303,7 +321,6 @@ function App(): JSX.Element {
   const [access, setAccess] = useState<'unknown' | 'editor' | 'viewer' | 'denied'>('unknown')
   const [ghLogin, setGhLogin] = useState<string>('')
   const [ghRepo, setGhRepo] = useState<import('./utils/ghSync').RepoRef | null>(null)
-  const [accessDetail, setAccessDetail] = useState<import('./utils/ghSync').AccessDetail>(null)
   const [ghDirty, setGhDirty] = useState<boolean>(false)
   const ghShaRef = useRef<string | null>(null)
   const ghPushInFlightRef = useRef<boolean>(false)
@@ -329,19 +346,17 @@ function App(): JSX.Element {
 
   useEffect(() => {
     if (serverMode || !ghRepo) return
-    if (!ghToken) { setAccess('denied'); setGhLogin(''); setAccessDetail(null); return }
+    if (!ghToken) { setAccess('denied'); setGhLogin(''); return }
     setAccess('unknown')
     void (async () => {
       try {
         const gh = await import('./utils/ghSync')
-        const { access: a, login, detail } = await gh.checkAccess(ghRepo, ghToken)
+        const { access: a, login } = await gh.checkAccess(ghRepo, ghToken)
         setAccess(a)
         setGhLogin(login)
-        setAccessDetail(detail)
       } catch {
         setAccess('denied')
         setGhLogin('')
-        setAccessDetail(null)
       }
     })()
   }, [serverMode, ghToken, ghRepo])
@@ -363,7 +378,7 @@ function App(): JSX.Element {
       window.removeEventListener('beforeunload', guard)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serverMode, ghToken, ghRepo, ghDirty, excalidrawAPI])
+  }, [serverMode, ghToken, ghRepo, ghDirty, excalidrawAPI, access])
 
   const pushToGitHub = async (isClosing: boolean): Promise<void> => {
     if (serverMode || !excalidrawAPI || !ghToken || !ghRepo) return
@@ -376,23 +391,29 @@ function App(): JSX.Element {
       const elements = excalidrawAPI.getSceneElements().filter(el => !el.isDeleted)
       const files = excalidrawAPI.getFiles()
       if (isClosing) {
-        // Best-effort synchronous flush on close
-        const cur = await fetch(`https://api.github.com/repos/${ghRepo.owner}/${ghRepo.repo}/contents/canvas.excalidraw?ref=${ghRepo.branch}`, {
-          headers: { Authorization: `Bearer ${ghToken}`, Accept: 'application/vnd.github+json' },
-        }).then(r => r.json()).catch(() => null)
-        await fetch(`https://api.github.com/repos/${ghRepo.owner}/${ghRepo.repo}/contents/canvas.excalidraw`, {
-          method: 'PUT',
-          keepalive: true,
-          headers: { Authorization: `Bearer ${ghToken}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            message: `excalidrop: force-save on close (${elements.length} elements)`,
-            content: btoa(unescape(encodeURIComponent(JSON.stringify({ type: 'excalidraw', version: 2, source: 'excalidrop', elements }, null, 2)))),
-            branch: ghRepo.branch,
-            ...(cur?.sha ? { sha: cur.sha } : {}),
-          }),
-        }).catch(() => { })
+        // Best-effort synchronous flush on close, with one 409 retry:
+        // an in-flight autosync may have moved the sha under us.
+        const doc = {
+          message: `excalidrop: force-save on close (${elements.length} elements)`,
+          content: btoa(unescape(encodeURIComponent(JSON.stringify({ type: 'excalidraw', version: 2, source: 'excalidrop', elements }, null, 2)))),
+          branch: ghRepo.branch,
+        };
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const cur = await fetch(`https://api.github.com/repos/${ghRepo.owner}/${ghRepo.repo}/contents/canvas.excalidraw?ref=${ghRepo.branch}`, {
+            cache: 'no-store',
+            headers: { Authorization: `Bearer ${ghToken}`, Accept: 'application/vnd.github+json' },
+          }).then(r => r.json()).catch(() => null)
+          const res = await fetch(`https://api.github.com/repos/${ghRepo.owner}/${ghRepo.repo}/contents/canvas.excalidraw`, {
+            method: 'PUT',
+            keepalive: true,
+            headers: { Authorization: `Bearer ${ghToken}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...doc, ...(cur?.sha ? { sha: cur.sha } : {}) }),
+          }).catch(() => null)
+          if (res && (res.ok || res.status !== 409)) break;
+        }
       } else {
         ghShaRef.current = await gh.pushScene(ghRepo, ghToken, { elements: elements as any, files: files as any })
+        lastPushedHashRef.current = hashElements(elements)
         setLastSyncTime(new Date())
         setSyncStatus('success')
         setTimeout(() => setSyncStatus('idle'), 2000)
@@ -403,9 +424,8 @@ function App(): JSX.Element {
       if (String((error as Error).message).includes('403') && ghRepo && ghToken) {
         try {
           const gh = await import('./utils/ghSync')
-          const { access: a, detail } = await gh.checkAccess(ghRepo, ghToken)
+          const { access: a } = await gh.checkAccess(ghRepo, ghToken)
           setAccess(a)
-          setAccessDetail(detail)
         } catch { setAccess('viewer') }
       }
       if (!isClosing) setSyncStatus('error')
@@ -418,11 +438,13 @@ function App(): JSX.Element {
     if (excalidrawAPI) {
       loadExistingElements()
 
-      if (!isConnected) {
+      // Static (gh-pages) mode has no WebSocket server — never connect there,
+      // otherwise it retries wss://<host>/ forever and spams the console.
+      if (serverMode && !isConnected) {
         connectWebSocket()
       }
     }
-  }, [excalidrawAPI, isConnected])
+  }, [excalidrawAPI, isConnected, serverMode])
 
   const loadExistingElements = async (): Promise<void> => {
     try {
@@ -455,6 +477,13 @@ function App(): JSX.Element {
         applySceneUpdateWithoutAutoSync(excalidrawAPI, { elements: converted, captureUpdate: CaptureUpdateAction.NEVER })
       }
       if (scene.files) excalidrawAPI?.addFiles(Object.values(scene.files))
+      // Seed the baseline so pre-load onChange noise never marks us dirty.
+      if (excalidrawAPI) {
+        lastPushedHashRef.current = hashElements(
+          excalidrawAPI.getSceneElements().filter((el) => !el.isDeleted),
+        )
+        setGhDirty(false)
+      }
     } catch (error) {
       console.error('Error loading existing elements:', error)
     }
@@ -952,32 +981,11 @@ function App(): JSX.Element {
     }
   }
 
-  const [showLogin, setShowLogin] = useState<boolean>(false)
-  const [loginCode, setLoginCode] = useState<string>('')
-  const [deviceInfo, setDeviceInfo] = useState<{ user_code: string; verification_uri: string } | null>(null)
-
-  const startLogin = async (): Promise<void> => {
-    const gh = await import('./utils/ghSync')
-    if (loginCode.trim()) {
-      gh.setToken(loginCode.trim())
-      setGhToken(loginCode.trim())
-      setLoginCode('')
-      setShowLogin(false)
-      return
-    }
-    try {
-      const flow = await gh.startDeviceFlow(gh.CLIENT_ID)
-      setDeviceInfo({ user_code: flow.user_code, verification_uri: flow.verification_uri })
-      window.open(flow.verification_uri, '_blank')
-    } catch (err) {
-      console.warn('Device flow blocked by CORS, showing agent handoff:', err)
-      setDeviceInfo({ user_code: 'ASK-YOUR-AGENT', verification_uri: 'ask the agent to run the github_login tool' })
-    }
-  }
-
   return (
     <div className="app">
-      {/* Floating status pill (no header — canvas is fullscreen) */}
+      {/* Floating status pill (no header — canvas is fullscreen).
+          No login UI: a token arrives silently (agent hands a #token= link
+          or has stored one before); without it the canvas is read-only. */}
       <div className="pill">
         <div className={`status-dot ${(serverMode ? isConnected : access === 'editor') ? 'status-connected' : 'status-disconnected'}`}></div>
         <span>
@@ -987,56 +995,23 @@ function App(): JSX.Element {
               ? 'Checking access…'
               : access === 'editor'
                 ? (syncStatus === 'syncing' ? 'Saving…' : ghDirty ? 'Unsaved changes' : lastSyncTime ? `Saved ${formatSyncTime(lastSyncTime)}${ghLogin ? ` · ${ghLogin}` : ''}` : `Can edit${ghLogin ? ` · ${ghLogin}` : ''}`)
-                : access === 'viewer'
-                  ? `Read-only${ghLogin ? ` · ${ghLogin}` : ''} — your changes won't save`
-                  : 'No access — login with a collaborator account'}
+                : 'Read-only'}
         </span>
-        {!serverMode && (
-          access === 'editor'
-            ? <button className="pill-btn" onClick={() => { void pushToGitHub(false) }}>Save now</button>
-            : <button className="pill-btn" onClick={() => setShowLogin(true)}>Login with GitHub</button>
+        {!serverMode && access === 'editor' && (
+          <button
+            className="save-icon-btn"
+            title="Save now"
+            aria-label="Save now"
+            onClick={() => { void pushToGitHub(false) }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+              <polyline points="17 21 17 13 7 13 7 21" />
+              <polyline points="7 3 7 8 15 8" />
+            </svg>
+          </button>
         )}
       </div>
-
-      {showLogin && !serverMode && (
-        <div className="login-modal">
-          <h3>Login with GitHub</h3>
-          {accessDetail === 'repo-not-covered' && ghLogin && (
-            <p><b>Almost there, {ghLogin}:</b> the app is installed on your account but <b>this repo isn't included</b>. Open your <a href={`https://github.com/settings/installations`} target="_blank" rel="noreferrer">app installations</a>, pick Excalidrop → Configure → add <code>{ghRepo?.owner}/{ghRepo?.repo}</code> (or switch to All repositories), then close and reopen this login.</p>
-          )}
-          {accessDetail === 'app-not-installed' && (
-            <p>First time on this repo? <a href={APP_INSTALL_URL} target="_blank" rel="noreferrer">Install the Excalidrop app</a> on it — repo access is canvas access.</p>
-          )}
-          {accessDetail !== 'repo-not-covered' && accessDetail !== 'app-not-installed' && (
-            <p>First time on this repo? <a href={APP_INSTALL_URL} target="_blank" rel="noreferrer">Install the Excalidrop app</a> on it — repo access is canvas access.</p>
-          )}
-          <p><b>Easiest:</b> ask your agent to run <code>github_login</code> for this site — it shows a code, you approve it (2FA via GitHub), and this page unlocks. No copy-paste.</p>
-          <details>
-            <summary>Or paste a token manually</summary>
-            <input
-              placeholder="Paste token (gh auth token)…"
-              value={loginCode}
-              onChange={(e) => setLoginCode(e.target.value)}
-            />
-            <div className="login-row">
-              <button className="btn-primary" onClick={() => { void startLogin() }}>Save token</button>
-            </div>
-          </details>
-          <div className="login-row">
-            <button className="btn-secondary" onClick={() => { setShowLogin(false); setDeviceInfo(null) }}>Close</button>
-          </div>
-          {deviceInfo && deviceInfo.user_code !== 'ASK-YOUR-AGENT' && (
-            <div style={{ background: '#f0f0f0', padding: '12px', borderRadius: '8px', marginTop: '8px' }}>
-              <p style={{ margin: '0 0 8px 0' }}><b>Device Flow Started:</b></p>
-              <p style={{ margin: '0 0 8px 0' }}>Open <a href={deviceInfo.verification_uri} target="_blank" rel="noreferrer">{deviceInfo.verification_uri}</a> and enter code:</p>
-              <p style={{ margin: '0', fontSize: '20px', fontWeight: 'bold', fontFamily: 'monospace', letterSpacing: '2px' }}>{deviceInfo.user_code}</p>
-            </div>
-          )}
-          {deviceInfo && deviceInfo.user_code === 'ASK-YOUR-AGENT' && (
-            <p>Ask your agent to run <code>github_login</code> for this site.</p>
-          )}
-        </div>
-      )}
 
       {/* Canvas Container */}
       <div className="canvas-container">
@@ -1053,8 +1028,16 @@ function App(): JSX.Element {
             viewModeEnabled={!serverMode && access !== 'editor'}
             excalidrawAPI={(api: ExcalidrawAPIRefValue) => setExcalidrawAPI(api)}
             onChange={() => {
-              if (serverMode) scheduleAutoSync()
-              else if (!suppressAutoSyncCountRef.current) setGhDirty(true)
+              if (serverMode) { scheduleAutoSync(); return }
+              if (suppressAutoSyncCountRef.current) return
+              const api = excalidrawAPIRef.current
+              if (!api) return
+              const h = hashElements(api.getSceneElements().filter((el) => !el.isDeleted))
+              if (lastPushedHashRef.current === null || h !== lastPushedHashRef.current) {
+                setGhDirty(true)
+              } else {
+                setGhDirty(false)
+              }
             }}
             initialData={{
               elements: [],

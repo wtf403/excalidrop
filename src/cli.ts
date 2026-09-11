@@ -370,8 +370,8 @@ async function cmdPages(_args: string[]): Promise<void> {
   console.log('   (uses `gh auth` — repo auto-detected, Pages auto-enabled.)\n');
   console.log('2. In your agent: switch_remote { target: "<owner>.github.io/<repo>" }');
   console.log('   Draw as usual — commits land on GitHub, viewer updates on gh-pages.\n');
-  console.log('3. Login: ask the agent to run github_login (device flow, 2FA via GitHub),');
-  console.log('   or paste a token (`gh auth token`) on the viewer login pill.\n');
+  console.log('3. Login: click Login with GitHub on the canvas (installs the app on the repo),');
+  console.log('   or ask the agent to run github_login (device flow, 2FA via GitHub).\n');
   console.log('Rule: never edit the canvas locally — the Pages site + GitHub repo are the canvas.');
 }
 
@@ -434,7 +434,7 @@ async function cmdSetup(args: string[]): Promise<void> {
   console.log(`  1. Install the Excalidrop app on this repo:\n     https://github.com/apps/${appSlug}/installations/new\n`);
   console.log('  2. In your agent: switch_remote { target: "<that canvas URL>" }');
   console.log('     then draw — commits land on GitHub, the viewer updates itself.');
-  console.log('\nLogin on the page: pill → device code → github.com/login/device (2FA via GitHub).');
+  console.log('\nLogin on the page: Login with GitHub button → install the app on the repo (2FA via GitHub).');
 }
 
 async function cmdLogin(): Promise<void> {

@@ -3,7 +3,7 @@ import express, { type Express } from 'express';
 import dotenv from 'dotenv';
 import logger from './utils/logger.js';
 import { generateId } from './types.js';
-import { loadScene, saveScene, syncPages, allowedRepos, currentRepo, SCENE_PATH } from './utils/github.js';
+import { loadScene, saveScene, syncPages, allowedRepos, currentRepo, SCENE_PATH, ensureRepoMetadata, configureGitHubPages, CANVAS_BRANCH } from './utils/github.js';
 
 dotenv.config();
 const app: Express = express();
@@ -51,6 +51,8 @@ function scheduleCommit(st: ProjectState): void {
       st.sha = await saveScene(st.repo, els, files, st.sha, `excalidrop: update ${els.length} elements`);
       const cur = await import('./utils/github.js');
       await cur.syncPages(st.repo, { type: 'excalidraw', version: 2, source: 'excalidrop', elements: els });
+      await cur.configureGitHubPages(st.repo, cur.CANVAS_BRANCH);
+      await cur.ensureRepoMetadata(st.repo, `https://${st.repo.replace('/', '.github.io/')}/`);
       st.dirty = false;
     } catch (e) { logger.warn('commit failed: ' + (e as Error).message); }
   }, Number(process.env.COMMIT_DEBOUNCE_MS || 15000));
@@ -62,6 +64,8 @@ app.post('/mcp/commit', async (req, res) => {
     const els = Array.from(st.elements.values());
     st.sha = await saveScene(st.repo, els, Array.from(st.files.values()), st.sha, req.body.message || `excalidrop: update ${els.length} elements`);
     await syncPages(st.repo, { type: 'excalidraw', version: 2, source: 'excalidrop', elements: els });
+    await configureGitHubPages(st.repo, CANVAS_BRANCH);
+    await ensureRepoMetadata(st.repo, `https://${st.repo.replace('/', '.github.io/')}/`);
     st.dirty = false;
     res.json({ ok: true, sha: st.sha, count: els.length });
   } catch (e) { res.status(409).json({ error: (e as Error).message }); }

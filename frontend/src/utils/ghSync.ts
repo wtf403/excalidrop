@@ -3,6 +3,14 @@
 export interface RepoRef { owner: string; repo: string; branch: string }
 
 export function detectRepo(): RepoRef | null {
+  // Localhost override for dev/testing: ?repo=owner/name
+  try {
+    const q = new URLSearchParams(window.location.search).get('repo');
+    if (q?.includes('/')) {
+      const [owner, repo] = q.split('/');
+      if (owner && repo) return { owner, repo, branch: 'gh-pages' };
+    }
+  } catch {}
   const explicit = (import.meta as any).env?.VITE_REPO_SLUG as string | undefined;
   if (explicit?.includes('/')) {
     const [owner, repo] = explicit.split('/');
@@ -38,6 +46,7 @@ export function setToken(t: string | null): void {
 
 async function gh(path: string, token: string, init?: RequestInit): Promise<any> {
   const r = await fetch(`https://api.github.com${path}`, {
+    cache: 'no-store',
     ...init,
     headers: {
       Authorization: `Bearer ${token}`,
@@ -55,25 +64,37 @@ export async function pushScene(
   ref: RepoRef, token: string, scene: { elements: unknown[]; files?: Record<string, unknown> },
 ): Promise<string> {
   const path = 'canvas.excalidraw';
-  let sha: string | undefined;
-  try {
-    const cur = await gh(`/repos/${ref.owner}/${ref.repo}/contents/${path}?ref=${ref.branch}`, token);
-    sha = cur.sha;
-  } catch {}
-  const body: any = {
-    message: `excalidrop: autosync ${scene.elements.length} elements`,
-    content: btoa(unescape(encodeURIComponent(JSON.stringify(
-      { type: 'excalidraw', version: 2, source: 'excalidrop', elements: scene.elements },
-      null, 2,
-    )))),
-    branch: ref.branch,
-  };
-  if (sha) body.sha = sha;
-  const out = await gh(`/repos/${ref.owner}/${ref.repo}/contents/${path}`, token, {
-    method: 'PUT',
-    body: JSON.stringify(body),
-  });
-  return out.content.sha as string;
+  const content = btoa(unescape(encodeURIComponent(JSON.stringify(
+    { type: 'excalidraw', version: 2, source: 'excalidrop', elements: scene.elements },
+    null, 2,
+  ))));
+  // Retry once on 409: another tab/agent commit landed between our sha read
+  // and PUT, so refetch the fresh sha and try again.
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let sha: string | undefined;
+    try {
+      const cur = await gh(`/repos/${ref.owner}/${ref.repo}/contents/${path}?ref=${ref.branch}`, token);
+      sha = cur.sha;
+    } catch {}
+    const body: any = {
+      message: `excalidrop: autosync ${scene.elements.length} elements`,
+      content,
+      branch: ref.branch,
+    };
+    if (sha) body.sha = sha;
+    try {
+      const out = await gh(`/repos/${ref.owner}/${ref.repo}/contents/${path}`, token, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      });
+      return out.content.sha as string;
+    } catch (e) {
+      lastErr = e;
+      if (!String((e as Error).message).includes('409')) throw e;
+    }
+  }
+  throw lastErr;
 }
 
 

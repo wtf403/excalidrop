@@ -10,6 +10,8 @@ trap "rm -rf $WORK" EXIT
 npm --prefix "$PKG_DIR" run build:frontend >/dev/null
 git clone --depth 1 --branch gh-pages "git@github.com:${REPO}.git" "$WORK" 2>/dev/null || { git init -b gh-pages "$WORK"; git -C "$WORK" remote add origin "git@github.com:${REPO}.git"; }
 cp -r "$PKG_DIR/dist/frontend/"* "$WORK"/
+# .nojekyll disables Jekyll so Pages serves the Vite SPA as-is.
+touch "$WORK/.nojekyll"
 cp "$PKG_DIR/canvas.excalidraw" "$WORK"/ 2>/dev/null || echo '{"type":"excalidraw","version":2,"elements":[]}' > "$WORK/canvas.excalidraw"
 git -C "$WORK" add -A && git -C "$WORK" -c user.name=excalidrop -c user.email=excalidrop@local commit -m "excalidrop: publish viewer" --allow-empty && git -C "$WORK" push origin gh-pages --force
 # Seed `main` on empty repos and keep it the default branch.

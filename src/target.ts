@@ -98,7 +98,12 @@ async function ensureLoaded(repo: string) {
   if (st) return st;
   const tok = resolveToken();
   if (!tok) throw new Error('No GitHub token. Run github_login or `gh auth login` first.');
-  const r = await fetch(`https://api.github.com/repos/${repo}/contents/${SCENE_PATH}?ref=main`, { headers: headers(), signal: AbortSignal.timeout(20000) });
+  const gh = await import('./utils/github.js');
+  
+  // Ensure main branch exists first
+  await gh.ensureMainBranch(repo);
+  
+  const r = await fetch(`https://api.github.com/repos/${repo}/contents/${SCENE_PATH}?ref=${gh.CANVAS_BRANCH}`, { headers: headers(), signal: AbortSignal.timeout(20000) });
   st = { elements: new Map(), sha: null, dirty: false };
   if (r.ok) {
     const j = await r.json() as any;
@@ -130,14 +135,14 @@ export async function commitNow(message?: string): Promise<{ sha: string; count:
   const elements = Array.from(st.elements.values());
   const doc = { type: 'excalidraw', version: 2, source: 'excalidrop', elements };
   const gh = await import('./utils/github.js');
-  const newSha = await gh.putFile(repo, SCENE_PATH, doc, message || `excalidrop: update ${elements.length} elements`, 'main', st.sha || undefined);
+  const newSha = await gh.putFile(repo, SCENE_PATH, doc, message || `excalidrop: update ${elements.length} elements`, gh.CANVAS_BRANCH, st.sha || undefined);
   st.sha = newSha;
   st.dirty = false;
   try {
-    const cur = await gh.getFile(repo, SCENE_PATH, 'gh-pages').catch(() => null);
-    await gh.putFile(repo, SCENE_PATH, doc, 'excalidrop: sync viewer', 'gh-pages', cur?.sha);
-    await gh.updateRepoMetadata(repo, { homepage: `https://${repo.replace('/', '.github.io/')}/` });
-  } catch (e) { logger.warn('viewer mirror failed: ' + (e as Error).message); }
+    await gh.syncPages(repo, doc);
+    await gh.configureGitHubPages(repo, gh.CANVAS_BRANCH);
+    await gh.ensureRepoMetadata(repo, `https://${repo.replace('/', '.github.io/')}/`);
+  } catch (e) { logger.warn('post-commit setup failed: ' + (e as Error).message); }
   logger.info(`Committed ${elements.length} elements to ${repo}`);
   return { sha: st.sha as string, count: elements.length };
 }

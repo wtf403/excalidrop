@@ -67,14 +67,11 @@
     "claude",
     "ai-tools"
   ],
-  "author": {
-    "name": "yctimlin",
-    "email": "c22647809@gmail.com"
-  },
+  "author": "yctimlin <c22647809@gmail.com>",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/wtf403/excalidrop.git"
+    "url": "git+https://github.com/wtf403/excalidrop.git"
   },
   "homepage": "https://github.com/wtf403/excalidrop#readme",
   "bugs": {
@@ -98,5 +95,9 @@
     "LICENSE",
     "tsconfig.json",
     "vite.config.js"
-  ]
+  ],
+  "directories": {
+    "doc": "docs"
+  },
+  "types": "./dist/index.d.ts"
 }

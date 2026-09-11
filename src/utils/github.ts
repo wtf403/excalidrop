@@ -1,6 +1,9 @@
 
 import logger from './logger.js';
 import { execSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const API = 'https://api.github.com';
 
@@ -20,7 +23,15 @@ export function currentRepo(): string {
 }
 export const SCENE_PATH = process.env.SCENE_PATH || 'canvas.excalidraw';
 
-export const CANVAS_BRANCH = process.env.CANVAS_BRANCH || 'excalidrop';
+// The branch that serves the Pages site AND holds the scene file.
+// Must match the frontend's detectRepo() (ghSync.ts) and scripts/publish-pages.sh.
+// (An older backend revision used 'excalidrop' here, which stranded repos on a
+// viewer-less branch that GitHub rendered as a Jekyll README page.)
+export const CANVAS_BRANCH = process.env.CANVAS_BRANCH || 'gh-pages';
+
+// Branch GitHub Pages serves. Same as CANVAS_BRANCH by default so the viewer
+// and canvas.excalidraw live together; the viewer loads ./canvas.excalidraw.
+export const PAGES_BRANCH = process.env.PAGES_BRANCH || 'gh-pages';
 
 export function allowedRepos(): string[] {
   const list = (process.env.ALLOWED_REPOS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
@@ -95,8 +106,240 @@ export async function saveScene(repo: string, elements: any[], files: any[], sha
   return putFile(repo, SCENE_PATH, { type: 'excalidraw', version: 2, source: 'excalidrop', elements, files: files || {} }, msg, CANVAS_BRANCH, sha || undefined);
 }
 
-export async function syncPages(_repo: string, _scene: any): Promise<void> {
+export async function syncPages(repo: string, scene: any): Promise<void> {
+  assertRepo(repo);
+  if (!token()) throw new Error('GITHUB_TOKEN missing');
+  // 1. The scene file is written to CANVAS_BRANCH by saveScene/putFile. When the
+  //    Pages branch differs, mirror it there so the viewer loads ./canvas.excalidraw.
+  if (CANVAS_BRANCH !== PAGES_BRANCH) {
+    const doc = normalizeSceneDoc(scene);
+    await putContentsFile(repo, PAGES_BRANCH, SCENE_PATH, doc, `excalidrop: sync scene (${doc.elements.length} elements)`);
+  }
+  // 2. Make sure the Pages branch actually serves the viewer. Without index.html
+  //    GitHub falls back to Jekyll-rendering the README (the classic "wtf is that" page).
+  await ensureViewer(repo, scene);
+}
 
+function normalizeSceneDoc(scene: any): { type: string; version: number; source: string; elements: any[]; files?: unknown } {
+  const elements = Array.isArray(scene) ? scene : (scene?.elements || []);
+  return { type: 'excalidraw', version: 2, source: 'excalidrop', ...(Array.isArray(scene) ? {} : scene), elements };
+}
+
+async function branchFileSha(repo: string, branch: string, filePath: string): Promise<string | null> {
+  const r = await fetch(`${API}/repos/${repo}/contents/${filePath}?ref=${branch}`, { headers: headers() });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`GitHub get ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  return ((await r.json()) as any).sha as string;
+}
+
+// Create or update a single JSON/text file via the Contents API.
+async function putContentsFile(repo: string, branch: string, filePath: string, data: unknown, message: string): Promise<void> {
+  const content = Buffer.from(typeof data === 'string' ? data : JSON.stringify(data, null, 2)).toString('base64');
+  const body: any = { message, content, branch };
+  const sha = await branchFileSha(repo, branch, filePath).catch(() => null);
+  if (sha) body.sha = sha;
+  const r = await fetch(`${API}/repos/${repo}/contents/${filePath}`, { method: 'PUT', headers: headers(), body: JSON.stringify(body) });
+  if (r.status === 404) {
+    await ensureBranch(repo, branch);
+    const retry = await fetch(`${API}/repos/${repo}/contents/${filePath}`, { method: 'PUT', headers: headers(), body: JSON.stringify(body) });
+    if (!retry.ok) throw new Error(`GitHub put ${retry.status}: ${(await retry.text()).slice(0, 200)}`);
+    return;
+  }
+  if (!r.ok) throw new Error(`GitHub put ${r.status}: ${(await r.text()).slice(0, 200)}`);
+}
+
+function resolveFrontendDir(): string | null {
+  if (process.env.FRONTEND_DIST && fs.existsSync(path.join(process.env.FRONTEND_DIST, 'index.html'))) {
+    return process.env.FRONTEND_DIST;
+  }
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  for (const cand of [path.join(here, '../frontend'), path.join(here, '../../dist/frontend')]) {
+    if (fs.existsSync(path.join(cand, 'index.html'))) return cand;
+  }
+  return null;
+}
+
+function listFilesRecursive(dir: string, base = dir): string[] {
+  const out: string[] = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...listFilesRecursive(full, base));
+    else if (entry.isFile()) out.push(path.relative(base, full));
+  }
+  return out;
+}
+
+async function mapPool<T, R>(items: T[], size: number, fn: (t: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(size, items.length) }, async () => {
+    while (i < items.length) {
+      const idx = i++;
+      out[idx] = await fn(items[idx]!);
+    }
+  }));
+  return out;
+}
+
+async function gitApi(pathname: string, method: string, body?: unknown): Promise<any> {
+  const r = await fetch(`${API}${pathname}`, {
+    method,
+    headers: headers(),
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`GitHub ${method} ${pathname} → ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  if (r.status === 204) return null;
+  return r.json();
+}
+
+// Deploy the viewer (local dist/frontend + .nojekyll + scene) to the Pages
+// branch as a single commit via the Git Data API. One-time per repo; callers
+// only reach this when index.html is absent there. Exported so existing repos
+// can pick up viewer upgrades (e.g. after `npm update excalidrop`).
+export async function deployViewer(repo: string, scene: unknown): Promise<void> {
+  const dir = resolveFrontendDir();
+  if (!dir) throw new Error('Viewer not published and no local dist/frontend found — run `npx excalidrop publish` (or `setup`) in the excalidrop checkout first.');
+  // The Git Data API rejects blob creation on repos with zero commits.
+  await ensureMainBranch(repo);
+  const files = listFilesRecursive(dir);
+  logger.info(`Deploying viewer to ${repo}@${PAGES_BRANCH} (${files.length} files)…`);
+  const blobs = await mapPool(files, 8, async (rel) => {
+    const content = fs.readFileSync(path.join(dir, rel)).toString('base64');
+    const b = await gitApi(`/repos/${repo}/git/blobs`, 'POST', { content, encoding: 'base64' });
+    return { path: rel.split(path.sep).join('/'), mode: '100644', type: 'blob', sha: b.sha };
+  });
+  // .nojekyll disables Jekyll so Pages serves the Vite SPA as-is.
+  const empty = await gitApi(`/repos/${repo}/git/blobs`, 'POST', { content: '', encoding: 'base64' }).catch(() => null);
+  const sceneDoc = normalizeSceneDoc(scene);
+  const sceneBlob = await gitApi(`/repos/${repo}/git/blobs`, 'POST', {
+    content: Buffer.from(JSON.stringify(sceneDoc, null, 2)).toString('base64'),
+    encoding: 'base64',
+  });
+  const tree: any[] = [
+    ...blobs,
+    ...(empty ? [{ path: '.nojekyll', mode: '100644', type: 'blob', sha: empty.sha }] : []),
+    { path: SCENE_PATH, mode: '100644', type: 'blob', sha: sceneBlob.sha },
+  ];
+  let baseSha: string | null = null;
+  let baseTree: string | null = null;
+  try {
+    const ref = await gitApi(`/repos/${repo}/git/ref/heads/${PAGES_BRANCH}`, 'GET');
+    baseSha = ref.object.sha;
+    baseTree = (await gitApi(`/repos/${repo}/git/commits/${baseSha}`, 'GET')).tree.sha;
+  } catch { /* branch does not exist yet — root commit */ }
+  const newTree = await gitApi(`/repos/${repo}/git/trees`, 'POST', {
+    ...(baseTree ? { base_tree: baseTree } : {}),
+    tree,
+  });
+  const commit = await gitApi(`/repos/${repo}/git/commits`, 'POST', {
+    message: 'excalidrop: publish viewer',
+    tree: newTree.sha,
+    ...(baseSha ? { parents: [baseSha] } : { parents: [] }),
+  });
+  if (baseSha) {
+    await gitApi(`/repos/${repo}/git/refs/heads/${PAGES_BRANCH}`, 'PATCH', { sha: commit.sha, force: true });
+  } else {
+    await gitApi(`/repos/${repo}/git/refs`, 'POST', { ref: `refs/heads/${PAGES_BRANCH}`, sha: commit.sha });
+  }
+  await requestPagesBuild(repo);
+  logger.info(`Viewer live (pending Pages build): https://${repo.replace('/', '.github.io/')}/`);
+}
+
+async function ensureViewer(repo: string, scene: unknown): Promise<void> {
+  const hasIndex = await branchFileSha(repo, PAGES_BRANCH, 'index.html').catch(() => null);
+  if (hasIndex) {
+    // Viewer present — just make sure Jekyll stays off.
+    const hasNoJekyll = await branchFileSha(repo, PAGES_BRANCH, '.nojekyll').catch(() => null);
+    if (!hasNoJekyll) {
+      try {
+        await putContentsFile(repo, PAGES_BRANCH, '.nojekyll', '', 'excalidrop: disable Jekyll for SPA');
+      } catch (e) { logger.warn('could not add .nojekyll: ' + (e as Error).message); }
+    }
+    return;
+  }
+  // No viewer on the Pages branch — deploy it now (one-time per repo),
+  // including the current scene so the canvas is never empty.
+  await deployViewer(repo, scene);
+}
+
+export async function ensureMainBranch(repo: string): Promise<void> {
+  assertRepo(repo);
+  if (!token()) throw new Error('GITHUB_TOKEN missing');
+  
+  // Check if main branch exists
+  const mainCheck = await fetch(`${API}/repos/${repo}/git/ref/heads/main`, { headers: headers() });
+  if (mainCheck.ok) return; // main branch already exists
+  
+  // Check if repository is completely empty (no branches at all)
+  const branches = await fetch(`${API}/repos/${repo}/branches`, { headers: headers() });
+  const branchList = await branches.json() as any[];
+  
+  if (branchList.length === 0) {
+    // Repository is empty, create initial commit with README using Contents API
+    const readme = `# ${repo.split('/')[1]}\n\nExcalidraw canvas powered by [excalidrop](https://github.com/wtf403/excalidrop).\n\nView canvas: https://${repo.replace('/', '.github.io/')}/\n`;
+    
+    const createRes = await fetch(`${API}/repos/${repo}/contents/README.md`, {
+      method: 'PUT',
+      headers: headers(),
+      body: JSON.stringify({
+        message: 'Initial commit',
+        content: Buffer.from(readme).toString('base64'),
+        branch: 'main'
+      })
+    });
+    
+    if (!createRes.ok) {
+      const error = await createRes.text();
+      throw new Error(`Failed to create main branch: ${error}`);
+    }
+    logger.info(`Created main branch with README.md for ${repo}`);
+  }
+}
+
+export async function configureGitHubPages(repo: string, branch: string = PAGES_BRANCH): Promise<void> {
+  assertRepo(repo);
+  if (!token()) throw new Error('GITHUB_TOKEN missing');
+
+  try {
+    const cur = await fetch(`${API}/repos/${repo}/pages`, { headers: headers() });
+    if (cur.ok && ((await cur.json()) as any)?.source?.branch === branch) return; // already serving it — pushes trigger builds
+  } catch { /* fall through to update/create */ }
+
+  // Try to update existing GitHub Pages config
+  const update = await fetch(`${API}/repos/${repo}/pages`, {
+    method: 'PUT',
+    headers: headers(),
+    body: JSON.stringify({ source: { branch, path: '/' } })
+  });
+
+  if (update.ok) {
+    logger.info(`GitHub Pages configured to use ${branch} branch`);
+    await requestPagesBuild(repo); // source switches don't reliably queue a build on their own
+    return;
+  }
+
+  // If update fails, try to create
+  const create = await fetch(`${API}/repos/${repo}/pages`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ source: { branch, path: '/' } })
+  });
+
+  if (create.ok || create.status === 409) {
+    logger.info(`GitHub Pages enabled on ${branch} branch`);
+  } else {
+    logger.warn(`Could not configure GitHub Pages: ${create.status}`);
+  }
+}
+
+// Commits created via the API don't reliably queue a Pages build (unlike pushes),
+// so request one explicitly after operations that change what Pages should serve.
+// Best effort: a 409 (build already queued) or missing Pages is fine.
+async function requestPagesBuild(repo: string): Promise<void> {
+  try {
+    const r = await fetch(`${API}/repos/${repo}/pages/builds`, { method: 'POST', headers: headers() });
+    if (!r.ok && r.status !== 409) logger.warn(`Pages build request → ${r.status}`);
+  } catch (e) { logger.warn('Pages build request failed: ' + (e as Error).message); }
 }
 
 export async function updateRepoMetadata(repo: string, updates: { description?: string; homepage?: string }): Promise<void> {
@@ -113,9 +356,7 @@ export async function ensureRepoMetadata(repo: string, homepage: string): Promis
   const r = await fetch(`${API}/repos/${repo}`, { headers: headers() });
   if (!r.ok) throw new Error(`GitHub GET ${r.status}: ${await r.text()}`);
   const data = await r.json() as any;
-  if (!data.description || data.description.trim() === '') {
-    await updateRepoMetadata(repo, { description: homepage, homepage });
-  } else if (!data.homepage || data.homepage.trim() === '') {
+  if (!data.homepage || data.homepage.trim() === '') {
     await updateRepoMetadata(repo, { homepage });
   }
 }
