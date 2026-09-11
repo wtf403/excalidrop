@@ -60,6 +60,8 @@ jobs:
           CANVAS_DEPLOY_TOKEN: ${{ secrets.CANVAS_DEPLOY_TOKEN }}
           VIEWER_REPOS: ${{ vars.VIEWER_REPOS }}
           INPUT_REPOS: ${{ inputs.repos }}
+          VITE_GITHUB_CLIENT_ID: ${{ vars.VIEWER_OAUTH_CLIENT_ID }}
+          VITE_AUTH_EXCHANGE_URL: ${{ vars.AUTH_EXCHANGE_URL }}
         run: |
           if [ -z "$CANVAS_DEPLOY_TOKEN" ]; then
             echo "No CANVAS_DEPLOY_TOKEN secret — skipping viewer deploy."

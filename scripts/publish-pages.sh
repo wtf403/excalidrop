@@ -15,6 +15,11 @@ else
 fi
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK" "${MAIN_WORK:-}"' EXIT
+# Optional redirect-login config, baked at build time (one bundle serves all
+# repos, but OAuth ids + worker URL are per-deployment). Empty = paste-token
+# fallback in the viewer. CI passes these through from repo variables.
+VITE_GITHUB_CLIENT_ID="${VITE_GITHUB_CLIENT_ID:-}" \
+VITE_AUTH_EXCHANGE_URL="${VITE_AUTH_EXCHANGE_URL:-}" \
 npm --prefix "$PKG_DIR" run build:frontend >/dev/null
 git clone --depth 1 --branch excalidrop "${GIT_REMOTE}" "$WORK" 2>/dev/null || { git init -b excalidrop "$WORK"; git -C "$WORK" remote add origin "${GIT_REMOTE}"; }
 # Drop stale build output (hashed asset names change every build) so the

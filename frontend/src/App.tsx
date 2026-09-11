@@ -450,18 +450,84 @@ function App(): JSX.Element {
     })()
   }, [serverMode, ghToken, ghRepo])
 
-  // Token login: github.com's OAuth endpoints don't send CORS headers, so a
-  // browser page can never run the device flow itself. Instead the user
-  // pastes a token (PAT with `repo` scope, or `gh auth token` output) —
-  // everything else is same-origin api.github.com calls, which work fine.
+  // Token login. When the build bakes VITE_AUTH_EXCHANGE_URL (see worker/),
+  // login is a true redirect: GitHub sends the tab back with ?code= and the
+  // worker swaps it for a token — no modal, no pasting. Without it we fall
+  // back to paste-a-token (github.com sends no CORS headers, so a static
+  // page can never run any OAuth/device flow by itself).
+  const AUTH_EXCHANGE_URL = (import.meta as any).env?.VITE_AUTH_EXCHANGE_URL as string | undefined
+  const OAUTH_STATE_KEY = 'excalidrop_oauth_state'
+  const OAUTH_REDIRECT_KEY = 'excalidrop_oauth_redirect'
   const [tokenInput, setTokenInput] = useState<string>('')
   const [loginBusy, setLoginBusy] = useState<boolean>(false)
 
   const startLogin = (): void => {
     setLoginError(null)
+    if (AUTH_EXCHANGE_URL) {
+      void (async () => {
+        const gh = await import('./utils/ghSync')
+        const redirect_uri = window.location.origin + window.location.pathname
+        const bytes = new Uint8Array(16)
+        crypto.getRandomValues(bytes)
+        const state = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('')
+        try {
+          sessionStorage.setItem(OAUTH_STATE_KEY, state)
+          sessionStorage.setItem(OAUTH_REDIRECT_KEY, redirect_uri)
+        } catch { /* private mode — state check skipped on return */ }
+        const q = new URLSearchParams({ client_id: gh.CLIENT_ID, redirect_uri, scope: 'repo', state })
+        window.location.href = `https://github.com/login/oauth/authorize?${q}`
+      })()
+      return
+    }
     setTokenInput('')
     setLoginOpen(true)
   }
+
+  // OAuth return: GitHub redirected back with ?code=[&state=]. Exchange via
+  // the worker, store the token, scrub the code from the URL. Runs once.
+  const oauthHandledRef = useRef(false)
+  useEffect(() => {
+    if (oauthHandledRef.current || !AUTH_EXCHANGE_URL) return
+    const q = new URLSearchParams(window.location.search)
+    const code = q.get('code')
+    if (!code) {
+      const err = q.get('error')
+      if (err) {
+        oauthHandledRef.current = true
+        history.replaceState(null, '', window.location.pathname + window.location.hash)
+        showToast(`Login failed: ${q.get('error_description') || err}`)
+      }
+      return
+    }
+    oauthHandledRef.current = true
+    const state = q.get('state')
+    void (async () => {
+      try {
+        const expected = sessionStorage.getItem(OAUTH_STATE_KEY)
+        const redirect_uri =
+          sessionStorage.getItem(OAUTH_REDIRECT_KEY) ||
+          window.location.origin + window.location.pathname
+        if (!expected || expected !== state) throw new Error('state mismatch — please log in again')
+        const r = await fetch(`${AUTH_EXCHANGE_URL}/exchange`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code, redirect_uri }),
+        })
+        const j = await r.json().catch(() => null)
+        if (!r.ok || !j?.token) throw new Error(j?.error || 'exchange failed')
+        const gh = await import('./utils/ghSync')
+        gh.setToken(j.token)
+        refreshedForRef.current = null
+        setGhToken(j.token as string)
+        showToast('Logged in — canvas unlocked')
+      } catch (e) {
+        showToast(`Login failed: ${(e as Error).message}`)
+      } finally {
+        history.replaceState(null, '', window.location.pathname + window.location.hash)
+      }
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const cancelLogin = (): void => {
     setLoginOpen(false)
