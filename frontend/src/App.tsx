@@ -364,9 +364,7 @@ function App(): JSX.Element {
   // Device-flow re-login (token expired/revoked and there is no other login
   // UI — without this the canvas degrades to read-only with no recovery).
   const [loginOpen, setLoginOpen] = useState<boolean>(false)
-  const [loginSession, setLoginSession] = useState<import('./utils/ghSync').DeviceFlowSession | null>(null)
   const [loginError, setLoginError] = useState<string | null>(null)
-  const loginAbortRef = useRef<AbortController | null>(null)
   const [ghLogin, setGhLogin] = useState<string>('')
   const [ghRepo, setGhRepo] = useState<import('./utils/ghSync').RepoRef | null>(null)
   // Static identity (repo + token) finished resolving. Boot load waits for
@@ -452,58 +450,56 @@ function App(): JSX.Element {
     })()
   }, [serverMode, ghToken, ghRepo])
 
-  // Device-flow login: show code → user approves on github.com → poll for the
-  // token → store it → the access effect above re-runs and restores editing.
-  const startLogin = async (): Promise<void> => {
+  // Token login: github.com's OAuth endpoints don't send CORS headers, so a
+  // browser page can never run the device flow itself. Instead the user
+  // pastes a token (PAT with `repo` scope, or `gh auth token` output) —
+  // everything else is same-origin api.github.com calls, which work fine.
+  const [tokenInput, setTokenInput] = useState<string>('')
+  const [loginBusy, setLoginBusy] = useState<boolean>(false)
+
+  const startLogin = (): void => {
     setLoginError(null)
-    try {
-      const gh = await import('./utils/ghSync')
-      if (!gh.HAS_CLIENT_ID) {
-        setLoginError('No GitHub OAuth client configured in this build.')
-        return
-      }
-      const s = gh.loadFlowSession() || await gh.startDeviceFlowFull(gh.CLIENT_ID)
-      gh.saveFlowSession(s)
-      setLoginSession(s)
-      setLoginOpen(true)
-    } catch (e) {
-      setLoginError((e as Error).message || 'Login failed to start.')
-    }
+    setTokenInput('')
+    setLoginOpen(true)
   }
 
   const cancelLogin = (): void => {
-    loginAbortRef.current?.abort()
-    loginAbortRef.current = null
     setLoginOpen(false)
-    setLoginSession(null)
+    setTokenInput('')
     setLoginError(null)
   }
 
-  useEffect(() => {
-    if (!loginOpen || !loginSession) return
-    const abort = new AbortController()
-    loginAbortRef.current = abort
-    void (async () => {
-      try {
-        const gh = await import('./utils/ghSync')
-        const creds = await gh.pollDeviceToken(gh.CLIENT_ID, loginSession, abort.signal)
-        gh.setToken(creds.token, creds.refresh_token ?? null, creds.expires_in ?? null)
-        gh.saveFlowSession(null)
-        refreshedForRef.current = null
-        setGhToken(creds.token)
-        setLoginOpen(false)
-        setLoginSession(null)
-        showToast('Logged in — canvas unlocked')
-      } catch (e) {
-        if ((e as Error).name === 'AbortError') return
-        setLoginError((e as Error).message || 'Login failed.')
-      } finally {
-        if (loginAbortRef.current === abort) loginAbortRef.current = null
-      }
-    })()
-    return () => abort.abort()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loginOpen, loginSession])
+  const submitLogin = async (): Promise<void> => {
+    // Accept a bare token or a full #token= link / ?token= URL paste.
+    const m = tokenInput.match(/token=([A-Za-z0-9_]+)/)
+    const t = (m?.[1] || tokenInput).trim()
+    if (!t) {
+      setLoginError('Paste a token first.')
+      return
+    }
+    setLoginBusy(true)
+    setLoginError(null)
+    try {
+      const gh = await import('./utils/ghSync')
+      // Validate before storing: a typo'd/revoked token must not replace a
+      // working one, and the user gets the real reason immediately.
+      await gh.checkAccess(ghRepo!, t).catch((e) => {
+        throw new Error(String((e as Error).message).includes('401')
+          ? 'That token was rejected (401) — check scopes and expiry.'
+          : (e as Error).message)
+      })
+      gh.setToken(t)
+      refreshedForRef.current = null
+      setGhToken(t)
+      setLoginOpen(false)
+      setTokenInput('')
+      showToast('Logged in — canvas unlocked')
+    } catch (e) {
+      setLoginError((e as Error).message || 'Login failed.')
+    } finally {
+      setLoginBusy(false)
+    }
+  }
 
   // Static mode has no WebSocket, so poll GitHub for changes the agent (or
   // another tab) committed and apply them live. Never clobbers local edits:
@@ -1395,20 +1391,33 @@ function App(): JSX.Element {
           <span>{toast}</span>
         </div>
       )}
-      {loginOpen && loginSession && (
+      {loginOpen && (
         <div className="login-panel" role="dialog" aria-label="Log in with GitHub">
           <div className="login-title">Log in with GitHub</div>
           <div className="login-hint">
-            Open{' '}
-            <a href={loginSession.verification_uri} target="_blank" rel="noreferrer">
-              {loginSession.verification_uri.replace('https://', '')}
+            Create a token with <code>repo</code> scope{' '}
+            <a href="https://github.com/settings/tokens/new?scopes=repo&description=excalidrop-canvas" target="_blank" rel="noreferrer">
+              here
             </a>{' '}
-            and enter this code:
+            (or run <code>gh auth token</code> locally) and paste it below:
           </div>
-          <div className="login-code">{loginSession.user_code}</div>
-          <div className="login-hint">Waiting for approval…</div>
+          <input
+            className="login-input"
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            placeholder="ghp_… / github_pat_…"
+            value={tokenInput}
+            onChange={(e) => setTokenInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') void submitLogin() }}
+          />
           {loginError && <div className="login-error">{loginError}</div>}
-          <button className="login-cancel" onClick={cancelLogin}>Cancel</button>
+          <div className="login-row">
+            <button className="login-cancel" onClick={cancelLogin}>Cancel</button>
+            <button className="login-save" onClick={() => { void submitLogin() }} disabled={loginBusy}>
+              {loginBusy ? 'Checking…' : 'Save token'}
+            </button>
+          </div>
         </div>
       )}
       </footer>

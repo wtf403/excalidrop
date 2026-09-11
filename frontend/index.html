@@ -227,6 +227,33 @@
             user-select: all;
         }
 
+        .login-input {
+            width: 100%;
+            box-sizing: border-box;
+            font-family: ui-monospace, monospace;
+            font-size: 12px;
+            padding: 8px 10px;
+            border: 1px solid #ddd;
+            border-radius: 0.5em;
+        }
+
+        .login-row {
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+        }
+
+        .login-save {
+            background: #1e1e1e;
+            color: #fff;
+            border-radius: 0.5em;
+        }
+
+        .login-save:disabled {
+            opacity: 0.6;
+            cursor: default;
+        }
+
         .login-error {
             color: #c82333;
             font-size: 12px;
