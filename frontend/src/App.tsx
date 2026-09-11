@@ -409,6 +409,28 @@ function App(): JSX.Element {
     setStaticReady(true)
   }
 
+  // Seed the last-known file sha ASAP (from the previous save, else the
+  // live Contents metadata) so a close-flush can PUT without a prior GET.
+  useEffect(() => {
+    if (serverMode || !ghRepo) return
+    try {
+      const cached = localStorage.getItem(`excalidrop_sha_${ghRepo.owner}_${ghRepo.repo}`)
+      if (cached) ghShaRef.current = cached
+    } catch {}
+    if (!ghToken) return
+    void fetch(`https://api.github.com/repos/${ghRepo.owner}/${ghRepo.repo}/contents/canvas.excalidraw?ref=${ghRepo.branch}`, {
+      cache: 'no-store',
+      headers: { Authorization: `Bearer ${ghToken}`, Accept: 'application/vnd.github+json' },
+    }).then(async (r) => {
+      if (!r.ok) return
+      const j = await r.json().catch(() => null)
+      if (j?.sha) {
+        ghShaRef.current = j.sha as string
+        try { localStorage.setItem(`excalidrop_sha_${ghRepo.owner}_${ghRepo.repo}`, j.sha) } catch {}
+      }
+    }).catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverMode, ghRepo, ghToken])
   // Deployed page title shows the repo canvas: "owner/repo".
   // Runtime (not build-time) so one bundle serves every target repo.
   useEffect(() => {
@@ -726,19 +748,34 @@ function App(): JSX.Element {
   // Attaching per-render closures stacked duplicate listeners — every state
   // change added another pagehide flush, producing duplicate save commits.
   const flushRef = useRef<() => void>(() => {})
-  flushRef.current = () => { void pushToGitHub(true) }
+  const serverModeRef = useRef(serverMode)
+  serverModeRef.current = serverMode
+  flushRef.current = () => {
+    if (serverModeRef.current) void syncToBackend({ silent: true, keepalive: true })
+    else void pushToGitHub(true)
+  }
   useEffect(() => {
-    if (serverMode) return
     const onVis = () => { if (document.hidden) flushRef.current() }
     const onHide = () => { flushRef.current() }
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      // Attempt autosave before page closes
+      flushRef.current()
+      // Show confirmation dialog only if there are unsaved changes
+      if (ghDirty) {
+        e.preventDefault()
+        e.returnValue = '' // Standard way to trigger browser confirmation
+      }
+    }
     document.addEventListener('visibilitychange', onVis)
     window.addEventListener('pagehide', onHide)
+    window.addEventListener('beforeunload', onBeforeUnload)
     return () => {
       document.removeEventListener('visibilitychange', onVis)
       window.removeEventListener('pagehide', onHide)
+      window.removeEventListener('beforeunload', onBeforeUnload)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serverMode])
+  }, [ghDirty])
 
   const pushToGitHub = async (isClosing: boolean): Promise<void> => {
     if (serverMode || !excalidrawAPI || !ghToken || !ghRepo) return
@@ -765,17 +802,20 @@ function App(): JSX.Element {
       const files = api.getFiles()
       // pushScene merges on 409 (local wins per id), so a stale tab can
       // never wipe newer upstream work — not even on its way out. keepalive
-      // lets the close-flush survive page teardown.
+      // lets the close-flush survive page teardown. On close we send a
+      // single PUT with the last-known sha (no prior GET): a multi-request
+      // chain never completes before the page is torn down.
       const res = await gh.pushScene(
         ghRepo, ghToken,
         { elements: localElements as any, files: files as any },
-        { keepalive: isClosing, base: baseElementsRef.current },
+        { keepalive: isClosing, base: baseElementsRef.current, sha: ghShaRef.current },
       ).catch(() => null)
       if (!res) {
         if (!isClosing) setSyncStatus('error')
         return
       }
       ghShaRef.current = res.sha
+      try { localStorage.setItem(`excalidrop_sha_${ghRepo.owner}_${ghRepo.repo}`, res.sha) } catch {}
       // A conflict may have merged upstream-only elements in: apply them so
       // the canvas converges instead of dropping them on the next save.
       const have = new Set(localElements.map((e: any) => e.id))
@@ -1275,8 +1315,8 @@ function App(): JSX.Element {
     })
   }
 
-  const syncToBackend = async (options: { silent?: boolean } = {}): Promise<void> => {
-    const { silent = false } = options
+  const syncToBackend = async (options: { silent?: boolean; keepalive?: boolean } = {}): Promise<void> => {
+    const { silent = false, keepalive = false } = options
 
     if (!excalidrawAPI) {
       console.warn('Excalidraw API not available')
@@ -1310,6 +1350,7 @@ function App(): JSX.Element {
 
       const response = await fetch('/api/elements/sync', {
         method: 'POST',
+        keepalive,
         headers: {
           'Content-Type': 'application/json',
         },
@@ -1327,6 +1368,7 @@ function App(): JSX.Element {
           console.log(`Syncing ${filesArray.length} files to backend`)
           const filesResponse = await fetch('/api/files', {
             method: 'POST',
+            keepalive,
             headers: {
               'Content-Type': 'application/json',
             },

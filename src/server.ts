@@ -5,6 +5,8 @@ import { createServer } from 'http';
 import net from 'net';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { writeFile, unlink } from 'fs/promises';
+import { existsSync, mkdirSync } from 'fs';
 import dotenv from 'dotenv';
 import logger from './utils/logger.js';
 import { getR2Config, r2Get, r2Put } from './utils/r2store.js';
@@ -41,10 +43,17 @@ const app: Express = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
 
+// Ensure assets directory exists
+const ASSETS_DIR = path.join(process.cwd(), 'assets');
+if (!existsSync(ASSETS_DIR)) {
+  mkdirSync(ASSETS_DIR, { recursive: true });
+}
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(authOptional);
+// Serve static assets
+app.use('/assets', express.static(ASSETS_DIR));
 
 
 const SCENE_KEY = `${process.env.GITHUB_REPOSITORY?.replace('/', '__') || process.env.SCENE_ID || 'default'}.json`;
@@ -885,27 +894,133 @@ app.get('/api/files', (_req: Request, res: Response) => {
 });
 
 // POST add/update files (batch)
-app.post('/api/files', (req: Request, res: Response) => {
+app.post('/api/files', async (req: Request, res: Response) => {
   const body = req.body;
   const fileList: ExcalidrawFile[] = Array.isArray(body) ? body : (body?.files || []);
+
   for (const f of fileList) {
     if (f.id && f.dataURL) {
-      files.set(f.id, { id: f.id, dataURL: f.dataURL, mimeType: f.mimeType || 'image/png', created: f.created || Date.now() });
+      // Extract file extension from mimeType
+      const mimeType = f.mimeType || 'image/png';
+      const ext = mimeType.split('/')[1] || 'png';
+      const filename = `${f.id}.${ext}`;
+      const filepath = path.join(ASSETS_DIR, filename);
+
+      try {
+        // Convert dataURL to buffer and save to disk
+        const base64Data = f.dataURL.replace(/^data:image\/\w+;base64,/, '');
+        const buffer = Buffer.from(base64Data, 'base64');
+        await writeFile(filepath, buffer);
+
+        logger.info(`Saved image file: ${filename} (${buffer.length} bytes)`);
+      } catch (error) {
+        logger.error(`Failed to save image ${f.id}: ${(error as Error).message}`);
+      }
+
+      // Store file reference with original dataURL (Excalidraw needs base64)
+      files.set(f.id, {
+        id: f.id,
+        dataURL: f.dataURL, // Keep original base64 dataURL
+        mimeType,
+        created: f.created || Date.now()
+      });
     }
   }
+
   // Broadcast files to connected clients
   persist(); broadcast({ type: 'files_added', files: fileList });
   res.json({ success: true, count: fileList.length });
 });
 
 // DELETE a file
-app.delete('/api/files/:id', (req: Request, res: Response) => {
+app.delete('/api/files/:id', async (req: Request, res: Response) => {
   const id = req.params.id as string;
-  if (files.delete(id)) {
+  const file = files.get(id);
+
+  if (file) {
+    // Delete from memory
+    files.delete(id);
+
+    // Delete file from disk if it exists
+    try {
+      const mimeType = file.mimeType || 'image/png';
+      const ext = mimeType.split('/')[1] || 'png';
+      const filename = `${id}.${ext}`;
+      const filepath = path.join(ASSETS_DIR, filename);
+
+      if (existsSync(filepath)) {
+        await unlink(filepath);
+        logger.info(`Deleted file from disk: ${filename}`);
+      }
+    } catch (err) {
+      logger.warn(`Failed to delete file from disk: ${(err as Error).message}`);
+    }
+
     broadcast({ type: 'file_deleted', fileId: id });
+    persist();
     res.json({ success: true });
   } else {
     res.status(404).json({ success: false, error: `File with ID ${id} not found` });
+  }
+});
+
+// POST a new image: saves binary to assets/, registers file, creates image element
+// Body: { dataURL, mimeType?, filename?, x?, y?, width?, height? }
+app.post('/api/images', async (req: Request, res: Response) => {
+  try {
+    const { dataURL, mimeType, filename, x, y, width, height } = req.body as {
+      dataURL?: string; mimeType?: string; filename?: string;
+      x?: number; y?: number; width?: number; height?: number;
+    };
+    if (!dataURL || typeof dataURL !== 'string' || !dataURL.startsWith('data:')) {
+      return res.status(400).json({ success: false, error: 'dataURL (data:...;base64,...) is required' });
+    }
+    const match = /^data:([^;]+);base64,(.+)$/s.exec(dataURL);
+    if (!match) return res.status(400).json({ success: false, error: 'Invalid dataURL format' });
+    const detectedMime: string = mimeType || match[1]!;
+    if (!/^image\/(png|jpe?g|gif|webp|svg\+xml|svg)$/.test(detectedMime)) {
+      return res.status(400).json({ success: false, error: `Unsupported mimeType: ${detectedMime}` });
+    }
+    const buffer = Buffer.from(match[2]!, 'base64');
+    if (buffer.length === 0) return res.status(400).json({ success: false, error: 'Empty image data' });
+    if (buffer.length > 10 * 1024 * 1024) return res.status(413).json({ success: false, error: 'Image too large (max 10MB)' });
+
+    const fileId = generateId();
+    const extMap: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg', 'image/svg': 'svg' };
+    const ext = extMap[detectedMime] || detectedMime.split('/')[1] || 'png';
+    const safeBase = (filename || 'image').replace(/[^a-zA-Z0-9-_]/g, '_').slice(0, 60) || 'image';
+    const diskFilename = `${fileId}-${safeBase}.${ext}`;
+    mkdirSync(ASSETS_DIR, { recursive: true });
+    await writeFile(path.join(ASSETS_DIR, diskFilename), buffer);
+
+    const fileRecord = { id: fileId, dataURL, mimeType: detectedMime, created: Date.now() };
+    files.set(fileId, fileRecord as never);
+
+    const elementId = generateId();
+    const now = new Date().toISOString();
+    const element = {
+      id: elementId, type: 'image', x: x ?? 0, y: y ?? 0,
+      width: width ?? 400, height: height ?? 300,
+      angle: 0, strokeColor: 'transparent', backgroundColor: 'transparent',
+      fillStyle: 'solid', strokeWidth: 1, strokeStyle: 'solid', roughness: 0,
+      opacity: 100, groupIds: [], roundness: null,
+      seed: Math.floor(Math.random() * 1000000), version: 1,
+      versionNonce: Math.floor(Math.random() * 1000000),
+      isDeleted: false, boundElements: null, link: null, locked: false,
+      fileId, status: 'saved', scale: [1, 1],
+      createdAt: now, updatedAt: now,
+    };
+    elements.set(elementId, element as never);
+
+    persist();
+    broadcast({ type: 'files_added', files: [fileRecord] } as never);
+    broadcast({ type: 'element_created', element } as never);
+
+    logger.info(`Saved image: ${diskFilename} (${buffer.length} bytes), element ${elementId}`);
+    res.json({ success: true, fileId, filename: diskFilename, assetUrl: `/assets/${diskFilename}`, element, bytes: buffer.length });
+  } catch (error) {
+    logger.error('Error uploading image:', error);
+    res.status(500).json({ success: false, error: (error as Error).message });
   }
 });
 

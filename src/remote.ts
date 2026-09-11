@@ -94,6 +94,17 @@ app.post('/mcp/:tool', async (req, res) => {
     else if (tool === 'update_element') { const cur = st.elements.get(a.id); if (!cur) throw new Error('not found'); const u = { ...cur, ...a }; st.elements.set(a.id, u); out = { element: u }; }
     else if (tool === 'delete_element') { st.elements.delete(a.id); out = { deleted: a.id }; }
     else if (tool === 'clear_canvas') { st.elements.clear(); out = { cleared: true }; }
+    else if (tool === 'add_image') {
+      const dataURL = a.dataURL || a.source;
+      if (!dataURL || typeof dataURL !== 'string' || !dataURL.startsWith('data:')) throw new Error('add_image requires dataURL or http(s) source resolving to a dataURL');
+      const mm = /^data:([^;]+);base64,/.exec(dataURL);
+      if (!mm) throw new Error('Invalid dataURL');
+      const fileId = generateId();
+      st.files.set(fileId, { id: fileId, dataURL, mimeType: a.mimeType || mm[1], created: Date.now() });
+      const el = { id: generateId(), type: 'image', x: a.x ?? 0, y: a.y ?? 0, width: a.width ?? 400, height: a.height ?? 300, fileId, status: 'saved', scale: [1, 1], version: 1 };
+      st.elements.set(el.id, el);
+      out = { element: el, fileId };
+    }
     else if (tool === 'query_elements') { out = { elements: Array.from(st.elements.values()).filter(e => !a.type || e.type === a.type) }; }
     else return res.status(404).json({ error: 'unknown tool' });
     st.dirty = true;

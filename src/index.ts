@@ -751,6 +751,23 @@ const tools: Tool[] = [
     }
   },
   {
+    name: 'add_image',
+    description: 'Add an image to the canvas from a local file path, HTTP(S) URL, or dataURL. The binary is saved to the server assets/ directory and an image element is created.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        source: { type: 'string', description: 'Local file path, http(s) URL, or data:...;base64,... URL of the image (png/jpg/gif/webp/svg)' },
+        dataURL: { type: 'string', description: 'Alias for source when passing a dataURL directly' },
+        filename: { type: 'string', description: 'Optional filename hint (used for the saved asset name)' },
+        x: { type: 'number', description: 'X position (default 0)' },
+        y: { type: 'number', description: 'Y position (default 0)' },
+        width: { type: 'number', description: 'Width in canvas units (default 400)' },
+        height: { type: 'number', description: 'Height in canvas units (default 300)' }
+      },
+      required: []
+    }
+  },
+  {
     name: 'snapshot_scene',
     description: 'Save a named snapshot of the current canvas state for later restoration',
     inputSchema: {
@@ -1705,6 +1722,73 @@ async function handleToolCall(request: CallToolRequest) {
             text: `Imported ${elementsToCreate.length} elements${importedFileCount > 0 ? ` and ${importedFileCount} files` : ''} (mode: ${params.mode})\n\n✅ Synced to canvas`
           }]
         };
+      }
+
+      case 'add_image': {
+        const params = z.object({
+          source: z.string().optional(),
+          dataURL: z.string().optional(),
+          filename: z.string().optional(),
+          x: z.number().optional(),
+          y: z.number().optional(),
+          width: z.number().optional(),
+          height: z.number().optional(),
+        }).parse(args);
+        const rawSource = params.dataURL || params.source;
+        if (!rawSource) throw new Error('add_image requires "source" (file path, URL, or dataURL)');
+        let finalDataURL: string;
+        let mimeHint: string | undefined;
+        let filenameHint: string | undefined = params.filename;
+        if (rawSource.startsWith('data:')) {
+          finalDataURL = rawSource;
+          const m = /^data:([^;]+);base64,/.exec(rawSource);
+          mimeHint = m?.[1];
+        } else if (/^https?:\/\//.test(rawSource)) {
+          const r = await fetch(rawSource);
+          if (!r.ok) throw new Error(`Failed to download image: ${r.status}`);
+          const buf = Buffer.from(await r.arrayBuffer());
+          if (buf.length > 10 * 1024 * 1024) throw new Error('Image too large (max 10MB)');
+          mimeHint = r.headers.get('content-type') || undefined;
+          filenameHint = filenameHint || path.basename(new URL(rawSource).pathname) || 'image';
+          finalDataURL = `data:${mimeHint || 'image/png'};base64,${buf.toString('base64')}`;
+        } else {
+          const abs = path.resolve(rawSource);
+          if (!fs.existsSync(abs)) throw new Error(`Image file not found: ${rawSource}`);
+          const buf = fs.readFileSync(abs);
+          if (buf.length > 10 * 1024 * 1024) throw new Error('Image too large (max 10MB)');
+          const ext = path.extname(abs).toLowerCase();
+          const mimeMap: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml' };
+          mimeHint = mimeMap[ext];
+          if (!mimeHint) throw new Error(`Unsupported image extension: ${ext || '(none)'} (use png/jpg/gif/webp/svg)`);
+          filenameHint = filenameHint || path.basename(abs);
+          finalDataURL = `data:${mimeHint};base64,${buf.toString('base64')}`;
+        }
+        // Remote (GitHub) mode: files live inside canvas.excalidraw, no local assets/ dir
+        const tgtImg = await import('./target.js');
+        if (tgtImg.isRemote()) {
+          const mm = /^data:([^;]+);base64,(.+)$/s.exec(finalDataURL);
+          if (!mm) throw new Error('Invalid image data');
+          const fileId = generateId();
+          tgtImg.rAddFile({ id: fileId, dataURL: finalDataURL, mimeType: mimeHint || mm[1], created: Date.now() });
+          const now = new Date().toISOString();
+          const element = tgtImg.rCreate({
+            id: generateId(), type: 'image', x: params.x ?? 0, y: params.y ?? 0,
+            width: params.width ?? 400, height: params.height ?? 300,
+            fileId, status: 'saved', scale: [1, 1],
+            createdAt: now, updatedAt: now, version: 1,
+          } as ServerElement);
+          try { await tgtImg.commitNow('excalidrop: add image'); } catch (e) { logger.warn('remote image commit failed: ' + (e as Error).message); }
+          return { content: [{ type: 'text', text: `Image saved to remote scene (fileId ${fileId}, will commit to GitHub)\n\n${JSON.stringify(element, null, 2)}\n\n✅ Synced to canvas` }] };
+        }
+        const uploadRes = await fetch(`${activeCanvasUrl()}/api/images`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dataURL: finalDataURL, mimeType: mimeHint, filename: filenameHint, x: params.x, y: params.y, width: params.width, height: params.height }),
+        });
+        const uploaded = await uploadRes.json() as any;
+        if (!uploadRes.ok || !uploaded.success) throw new Error(uploaded.error || `Image upload failed: ${uploadRes.status}`);
+        logger.info('Image added via MCP', { fileId: uploaded.fileId, element: (uploaded.element as any)?.id, bytes: uploaded.bytes });
+        return { content: [{ type: 'text', text: `Image saved to assets (${uploaded.filename}, ${uploaded.bytes} bytes), fileId ${uploaded.fileId}\n\n${JSON.stringify(uploaded.element, null, 2)}\n\n✅ Synced to canvas` }] };
       }
 
       case 'export_to_image': {

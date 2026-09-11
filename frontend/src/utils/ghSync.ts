@@ -311,14 +311,16 @@ async function putSceneFile(
   ref: RepoRef, token: string, elements: unknown[], message: string,
   sha: string | undefined, keepalive: boolean,
 ): Promise<string> {
-  // Attribute the commit to the actual GitHub user behind the token, not the
-  // OAuth app: Contents API defaults author/committer to the token owner only
-  // when omitted in some flows — set explicitly from /user.
+  // Close-flush (keepalive): single-flight PUT — skip the /user attribution
+  // lookup so the save is ONE request that can survive page teardown.
+  // The Contents API still attributes the commit to the token owner.
   let author: { name: string; email: string } | undefined;
-  try {
-    const me = await gh('/user', token);
-    if (me?.login) author = { name: me.login, email: `${me.login}@users.noreply.github.com` };
-  } catch { /* fall back to token-owner default */ }
+  if (!keepalive) {
+    try {
+      const me = await gh('/user', token);
+      if (me?.login) author = { name: me.login, email: `${me.login}@users.noreply.github.com` };
+    } catch { /* fall back to token-owner default */ }
+  }
   const out = await gh(`/repos/${ref.owner}/${ref.repo}/contents/canvas.excalidraw`, token, {
     method: 'PUT',
     ...(keepalive ? { keepalive: true } : {}),
@@ -336,10 +338,16 @@ async function putSceneFile(
 
 export async function pushScene(
   ref: RepoRef, token: string, scene: { elements: unknown[]; files?: Record<string, unknown> },
-  opts: { keepalive?: boolean; base?: any[] } = {},
+  opts: { keepalive?: boolean; base?: any[]; sha?: string | null } = {},
 ): Promise<{ sha: string; elements: any[]; conflicts?: string[]; added?: number; updated?: number }> {
   const local = (scene.elements || []) as any[];
   const keepalive = opts.keepalive ?? false;
+  // Close-flush: fire a single PUT with the last-known sha — no prior GET.
+  // A 3-request chain (GET + /user + PUT) never survives page teardown.
+  if (keepalive && opts.sha) {
+    const sha = await putSceneFile(ref, token, local, `excalidrop: autosync ${local.length} elements`, opts.sha, true);
+    return { sha, elements: local };
+  }
   const cur = await readSceneFile(ref, token);
   try {
     const sha = await putSceneFile(ref, token, local, `excalidrop: autosync ${local.length} elements`, cur?.sha, keepalive);

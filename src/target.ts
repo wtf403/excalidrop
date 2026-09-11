@@ -165,6 +165,11 @@ export async function commitNow(message?: string): Promise<{ sha: string; count:
 }
 
 
+export function rAddFile(file: any): any {
+  const st = current();
+  st.files.push(file); st.dirty = true; scheduleCommit();
+  return file;
+}
 export function rCreate(el: ServerElement): ServerElement {
   const st = current();
   const full = { ...el, id: el.id || generateId() };
