@@ -383,10 +383,17 @@ function App(): JSX.Element {
   const opSeqRef = useRef<number>(0)
 
   useEffect(() => {
-    fetch('/api/health', { headers: authHeaders() }).then(r => {
-      if (r.ok) { setServerMode(true); connectWebSocket() }
-      else { initStaticMode() }
-    }).catch(() => initStaticMode())
+    // Only check for server mode if the page is served from a server (not GitHub Pages static)
+    const isStaticHost = window.location.hostname.includes('github.io') ||
+                         window.location.pathname.startsWith('/excalidrop/')
+    if (isStaticHost) {
+      initStaticMode()
+    } else {
+      fetch('/api/health', { headers: authHeaders() }).then(r => {
+        if (r.ok) { setServerMode(true); connectWebSocket() }
+        else { initStaticMode() }
+      }).catch(() => initStaticMode())
+    }
     return () => {
       if (websocketRef.current) {
         websocketRef.current.close()
@@ -870,24 +877,29 @@ function App(): JSX.Element {
 
   const loadExistingElements = async (): Promise<void> => {
     try {
-      const response = await fetch('/api/elements', { headers: authHeaders() }).catch(() => null)
-      if (response?.ok) {
-        const result: ApiResponse = await response.json()
-        if (result.success && result.elements && result.elements.length > 0) {
-          const cleanedElements = result.elements.map(cleanElementForExcalidraw)
-          const convertedElements = convertElementsPreservingImageProps(cleanedElements)
-          if (excalidrawAPI) {
-            applyLoadedElements(convertedElements)
+      // Only check for server mode if the page is served from a server (not GitHub Pages static)
+      const isStaticHost = window.location.hostname.includes('github.io') ||
+                           window.location.pathname.startsWith('/excalidrop/')
+      if (!isStaticHost) {
+        const response = await fetch('/api/elements', { headers: authHeaders() }).catch(() => null)
+        if (response?.ok) {
+          const result: ApiResponse = await response.json()
+          if (result.success && result.elements && result.elements.length > 0) {
+            const cleanedElements = result.elements.map(cleanElementForExcalidraw)
+            const convertedElements = convertElementsPreservingImageProps(cleanedElements)
+            if (excalidrawAPI) {
+              applyLoadedElements(convertedElements)
+            }
           }
-        }
-        const filesResponse = await fetch('/api/files', { headers: authHeaders() })
-        if (filesResponse.ok) {
-          const filesResult = await filesResponse.json() as ApiResponse
-          if (filesResult.files) {
-            excalidrawAPI?.addFiles(Object.values(filesResult.files))
+          const filesResponse = await fetch('/api/files', { headers: authHeaders() })
+          if (filesResponse.ok) {
+            const filesResult = await filesResponse.json() as ApiResponse
+            if (filesResult.files) {
+              excalidrawAPI?.addFiles(Object.values(filesResult.files))
+            }
           }
+          return
         }
-        return
       }
       const gh = await import('./utils/ghSync')
       const scene = await gh.loadStaticScene(ghRepo, ghToken)

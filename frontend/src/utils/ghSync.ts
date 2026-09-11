@@ -527,15 +527,12 @@ export async function checkAccess(ref: RepoRef, token: string): Promise<{ access
   const wanted = `${ref.owner}/${ref.repo}`.toLowerCase();
 
   const inst = await gh('/user/installations?per_page=100', token).catch(() => null);
-  if (inst?.installations) {
-    if ((inst.installations as unknown[]).length === 0) {
-      return { access: 'denied', login, detail: 'app-not-installed' };
-    }
+  if (inst?.installations && (inst.installations as unknown[]).length > 0) {
+    // GitHub App token path: check installation-covered repos
     for (const i of inst.installations || []) {
       const repos = await gh(`/user/installations/${(i as any).id}/repositories?per_page=100`, token).catch(() => null);
       const hit = (repos?.repositories || []).find((r: any) => r.full_name.toLowerCase() === wanted);
       if (hit) {
-
         const perms = await gh(`/repos/${ref.owner}/${ref.repo}/collaborators/${login}/permission`, token).catch(() => null);
         const p = (perms?.permission || '') as string;
         if (p === 'read' || p === 'triage') return { access: 'viewer', login, detail: null };
