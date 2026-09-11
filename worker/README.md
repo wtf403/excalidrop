@@ -3,14 +3,21 @@
 One-click "Log in with GitHub" on the static canvas needs this: GitHub's
 token endpoints send no CORS headers and the code→token exchange requires
 the client secret, so a browser page can never do it alone. This worker
-swaps the one-time `code` for a token and returns only the token.
+swaps the one-time `code` for a token and returns only credential fields.
+It works with either app type — only the two values below change.
 
 ## Setup (once)
 
-1. Create an **OAuth App** (not a GitHub App — OAuth App tokens don't
-   expire): `github.com/settings/developers` → New OAuth App.
-   - Homepage URL: your canvas, e.g. `https://wtf403.github.io/excalidrop2/`
-   - Authorization callback URL: same URL (exact origin + path).
+1. Use your **GitHub App** (`github.com/apps/excalidrop` → settings) or an
+   **OAuth App** (`github.com/settings/developers`):
+   - Callback URL: your canvas, e.g. `https://wtf403.github.io/excalidrop2/`
+     (exact match, trailing slash included). One URL is enough even for
+     several canvases — they share one origin, so one login unlocks all.
+   - GitHub App: Client ID + **Client secrets** (generate one; the `.pem`
+     private key is NOT used here). User tokens expire after ~8h — the
+     viewer renews them silently via the forwarded refresh token.
+   - OAuth App: Client ID + Client secrets, leave token expiry off for
+     tokens that never expire.
 2. Deploy:
    ```bash
    cd worker

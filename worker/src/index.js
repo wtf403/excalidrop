@@ -78,8 +78,19 @@ export default {
     if (!j || !j.access_token) {
       return json({ error: (j && (j.error_description || j.error)) || 'exchange failed' }, 400, cors);
     }
-    // Deliberately returns ONLY the token — scope etc. are discoverable by
-    // the viewer itself via the API, and nothing secret ever leaves here.
-    return json({ token: j.access_token }, 200, cors);
+    // Deliberately returns ONLY credential fields — scope etc. are
+    // discoverable by the viewer itself via the API, and the client secret
+    // never leaves here. refresh_token/expires_in are forwarded when the
+    // provider issues them (GitHub App user tokens expire after ~8h); the
+    // viewer persists them and renews silently.
+    return json(
+      {
+        token: j.access_token,
+        ...(j.refresh_token ? { refresh_token: j.refresh_token } : {}),
+        ...(j.expires_in ? { expires_in: Number(j.expires_in) } : {}),
+      },
+      200,
+      cors,
+    );
   },
 };

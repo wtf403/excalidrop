@@ -516,7 +516,7 @@ function App(): JSX.Element {
         const j = await r.json().catch(() => null)
         if (!r.ok || !j?.token) throw new Error(j?.error || 'exchange failed')
         const gh = await import('./utils/ghSync')
-        gh.setToken(j.token)
+        gh.setToken(j.token, j.refresh_token ?? null, j.expires_in ?? null)
         refreshedForRef.current = null
         setGhToken(j.token as string)
         showToast('Logged in — canvas unlocked')
