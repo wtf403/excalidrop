@@ -102,10 +102,16 @@ export default {
         redirect_uri,
       }),
     }).catch(() => null);
-    if (!r || !r.ok) return json({ error: 'github exchange failed' }, 502, cors);
-    const j = await r.json().catch(() => null);
-    if (!j || !j.access_token) {
-      return json({ error: (j && (j.error_description || j.error)) || 'exchange failed' }, 400, cors);
+    const j = await r?.json().catch(() => null);
+    if (!r || !r.ok || !j?.access_token) {
+      // Surface GitHub's own reason (incorrect_client_credentials,
+      // bad_verification_code, redirect_uri_mismatch…): it contains no
+      // secrets and is the only way to tell id/secret/URL mismatches apart.
+      const detail = j?.error_description || j?.error || `github responded ${r?.status ?? 'unreachable'}`;
+      try {
+        console.log('exchange failed:', j?.error, r?.status);
+      } catch { /* logging must never break the response */ }
+      return json({ error: detail }, 400, cors);
     }
     // Deliberately returns ONLY credential fields — scope etc. are
     // discoverable by the viewer itself via the API, and the client secret
