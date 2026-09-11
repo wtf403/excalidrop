@@ -6,7 +6,7 @@
     {
       "id": "4y3I-oTPT78jZhgerIUoN",
       "type": "ellipse",
-      "x": 347.390625,
+      "x": 347.52734375,
       "y": 350.9899377421531,
       "width": 140.21484375,
       "height": 164.6484375,
@@ -25,11 +25,11 @@
         "type": 2
       },
       "seed": 27873257,
-      "version": 1,
-      "versionNonce": 483991530,
+      "version": 2,
+      "versionNonce": 1712408698,
       "isDeleted": false,
       "boundElements": null,
-      "updated": 1789169105208,
+      "updated": 1789169181294,
       "link": null,
       "locked": false
     },
@@ -59,7 +59,7 @@
       "versionNonce": 2119836522,
       "isDeleted": false,
       "boundElements": null,
-      "updated": 1789169105208,
+      "updated": 1789169126043,
       "link": null,
       "locked": false
     },
@@ -118,7 +118,6 @@
       "index": "a4",
       "roundness": null,
       "seed": 6777444,
-      "version": 5,
       "versionNonce": 40229724,
       "isDeleted": false,
       "boundElements": null,
@@ -131,7 +130,8 @@
         1,
         1
       ],
-      "crop": null
+      "crop": null,
+      "version": 1
     }
   ]
 }
