@@ -2,6 +2,37 @@
   "type": "excalidraw",
   "version": 2,
   "source": "excalidrop",
-  "elements": [],
+  "elements": [
+    {
+      "id": "WOi4UXqFVRiaCMlw-GavD",
+      "type": "ellipse",
+      "x": -443.8409715816233,
+      "y": -805.6150730723132,
+      "width": 1118.1269510462948,
+      "height": 1091.2815184234162,
+      "angle": 0,
+      "strokeColor": "#1e1e1e",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "opacity": 100,
+      "groupIds": [],
+      "frameId": null,
+      "index": "aA",
+      "roundness": {
+        "type": 2
+      },
+      "seed": 1086695227,
+      "version": 42,
+      "versionNonce": 1301359707,
+      "isDeleted": false,
+      "boundElements": null,
+      "updated": 1789170884456,
+      "link": null,
+      "locked": false
+    }
+  ],
   "files": {}
 }
