@@ -79,7 +79,8 @@
 
         /* Save button portaled into Excalidraw's mobile side island
            (.mobile-misc-tools-container): matches the 2rem ToolIcon
-           squares stacked there. Yellow when there are unsaved changes. */
+           squares stacked there. Unsaved changes tint only the icon
+           stroke yellow — never the button background. */
         .excalidraw .mobile-save-btn {
             width: var(--default-button-size);
             height: var(--default-button-size);
@@ -99,8 +100,12 @@
         }
 
         .excalidraw .mobile-save-btn.dirty {
-            background: #ffd60a;
-            color: #1e1e1e;
+            background: transparent;
+            color: #ffd60a;
+        }
+
+        .excalidraw .mobile-save-btn.dirty:hover {
+            background: transparent;
         }
 
         .excalidraw .mobile-save-btn svg {

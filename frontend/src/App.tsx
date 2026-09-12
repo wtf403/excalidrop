@@ -103,6 +103,7 @@ interface LocalSnapshot {
   updatedAt: number;
   elements: any[];
   base: any[];
+  files?: Record<string, any>;
 }
 
 const snapshotKeyFor = (repo: { owner: string; repo: string } | null): string =>
@@ -120,12 +121,19 @@ const readLocalSnapshot = (key: string): LocalSnapshot | null => {
   }
 }
 
-const writeLocalSnapshot = (key: string, elements: any[], base: any[]): boolean => {
+const writeLocalSnapshot = (key: string, elements: any[], base: any[], files?: Record<string, any>): boolean => {
   try {
-    localStorage.setItem(key, JSON.stringify({ updatedAt: Date.now(), elements, base }))
+    localStorage.setItem(key, JSON.stringify({ updatedAt: Date.now(), elements, base, ...(files ? { files } : {}) }))
     return true
   } catch {
-    return false
+    // Image dataURLs can exceed the ~5MB localStorage quota — fall back to
+    // an elements-only journal rather than losing everything.
+    try {
+      localStorage.setItem(key, JSON.stringify({ updatedAt: Date.now(), elements, base }))
+      return true
+    } catch {
+      return false
+    }
   }
 }
 
@@ -439,7 +447,9 @@ function App(): JSX.Element {
     if (!api) return false
     try {
       const els = api.getSceneElements().filter((el) => !el.isDeleted)
-      return writeLocalSnapshot(snapshotKeyFor(ghRepoRef.current), els as any, baseElementsRef.current)
+      let files: Record<string, any> | undefined
+      try { files = api.getFiles() as any } catch { files = undefined }
+      return writeLocalSnapshot(snapshotKeyFor(ghRepoRef.current), els as any, baseElementsRef.current, files)
     } catch { return false }
   }
 
@@ -476,19 +486,27 @@ function App(): JSX.Element {
     if (snap.elements.length === 0 && (snap.base || []).length > 0 &&
         sig(snap.base) === sig(upstream || [])) {
       applySceneUpdateWithoutAutoSync(api, { elements: [], captureUpdate: CaptureUpdateAction.NEVER })
-      showToast('Recovered unsaved work from before the tab closed')
       return true
     }
-    const { merged, conflicts } = gh.threeWayMerge(snap.base || [], snap.elements, upstream || [])
+    const { merged } = gh.threeWayMerge(snap.base || [], snap.elements, upstream || [])
     if (sig(merged) === sig(upstream || [])) {
+      // Elements match, but the journal may still hold image binaries never
+      // committed to assets/ — restore them silently so the next push syncs.
+      try {
+        const jf = Object.values((snap as any).files || {})
+        if (jf.length > 0) api.addFiles(jf as any)
+      } catch { /* non-fatal */ }
       clearLocalSnapshot(key)
-      return false
+      return Object.keys((snap as any).files || {}).length > 0
     }
     const converted = convertElementsPreservingImageProps(merged.map(cleanElementForExcalidraw))
     applySceneUpdateWithoutAutoSync(api, { elements: converted, captureUpdate: CaptureUpdateAction.NEVER })
-    showToast(conflicts.length > 0
-      ? `Recovered unsaved work + merged remote changes (${conflicts.length} conflict(s) kept newer)`
-      : 'Recovered unsaved work from before the tab closed')
+    // Silently restore journaled image binaries (never toast — recovery is
+    // expected after every tab close, not an exceptional event).
+    try {
+      const jf = Object.values((snap as any).files || {})
+      if (jf.length > 0) api.addFiles(jf as any)
+    } catch { /* non-fatal */ }
     return true
   }
 
@@ -854,22 +872,23 @@ function App(): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverMode, ghToken, ghRepo, ghDirty, excalidrawAPI, access])
 
-  // Close-flush listeners are attached ONCE (stable ref indirection).
+  // Close-save listeners are attached ONCE (stable ref indirection).
   // Attaching per-render closures stacked duplicate listeners — every state
   // change added another pagehide flush, producing duplicate save commits.
-  // The GUARANTEE is the synchronous local journal (survives teardown); the
-  // network flush is best-effort only — keepalive bodies are capped (~64 KiB)
-  // and multi-request chains never complete during unload. Whatever doesn't
-  // make it over the network is restored + pushed on the next boot.
-  // visibilitychange(hidden) fires while the page is still alive, so its
-  // async push is the one that usually lands.
+  // visibilitychange(hidden) fires while the page is still ALIVE, so it does
+  // a full async save (scene + image assets) that actually completes.
+  // pagehide/beforeunload can no longer do network I/O reliably — keepalive
+  // bodies are capped (~64 KiB, a single image blows it) and the multi-request
+  // asset chain never finishes during teardown — so they only do the
+  // synchronous local journal write (guaranteed). Whatever isn't pushed is
+  // restored silently + pushed on the next boot.
   const flushRef = useRef<() => void>(() => {})
   const journalRef = useRef<() => boolean>(() => false)
   const serverModeRef = useRef(serverMode)
   serverModeRef.current = serverMode
   flushRef.current = () => {
-    if (serverModeRef.current) void syncToBackend({ silent: true, keepalive: true })
-    else void pushToGitHub(true)
+    if (serverModeRef.current) void syncToBackend({ silent: true })
+    else void pushToGitHub(false)
   }
   journalRef.current = () => journalScene()
   useEffect(() => {
@@ -880,16 +899,13 @@ function App(): JSX.Element {
     }
     const onHide = () => {
       journalRef.current()
-      flushRef.current()
     }
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       const journaled = journalRef.current()
-      flushRef.current()
-      // The close path SAVES: the sync journal write above is guaranteed, the
-      // keepalive flush is best-effort, and boot restores + pushes whatever
-      // never made it over the network. So no nag dialog when the journal
-      // landed — warn only if even the local snapshot failed with unsaved
-      // work that would actually be lost.
+      // The close path SAVES via the guaranteed journal write above; boot
+      // restores + pushes whatever never made it over the network. So no nag
+      // dialog when the journal landed — warn only if even the local snapshot
+      // failed with unsaved work that would actually be lost.
       if (!journaled && ghDirty) {
         e.preventDefault()
         e.returnValue = '' // Standard way to trigger browser confirmation
@@ -1767,6 +1783,7 @@ function App(): JSX.Element {
           <Excalidraw
             viewModeEnabled={!serverMode && access !== 'editor'}
             excalidrawAPI={(api: ExcalidrawAPIRefValue) => setExcalidrawAPI(api)}
+            validateEmbeddable={true}
             onChange={() => {
               if (serverMode) { scheduleAutoSync(); scheduleJournal(); return }
               if (suppressAutoSyncCountRef.current) return
