@@ -1671,8 +1671,23 @@ function App(): JSX.Element {
   const MobileSavePortal = (): JSX.Element | null => {
     const [target, setTarget] = useState<Element | null>(null)
     useEffect(() => {
-      const find = () => setTarget(document.querySelector('.excalidraw .mobile-misc-tools-container'))
-      find()
+      // The island mounts asynchronously inside Excalidraw (after its own
+      // breakpoint detection), so a one-shot query on our mount races it.
+      // Observe until it appears; resize covers later breakpoint switches.
+      const find = () => {
+        const el = document.querySelector('.excalidraw .mobile-misc-tools-container')
+        if (el) {
+          setTarget(el)
+          return true
+        }
+        return false
+      }
+      if (!find()) {
+        const obs = new MutationObserver(() => { if (find()) obs.disconnect() })
+        obs.observe(document.body, { childList: true, subtree: true })
+        window.addEventListener('resize', find)
+        return () => { obs.disconnect(); window.removeEventListener('resize', find) }
+      }
       window.addEventListener('resize', find)
       return () => window.removeEventListener('resize', find)
     }, [])
