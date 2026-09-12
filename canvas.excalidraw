@@ -129,8 +129,8 @@
     {
       "id": "bXDQiuRSRjJGpX00fOY8_",
       "type": "embeddable",
-      "x": 707.5183146024526,
-      "y": -92.80315897691685,
+      "x": 707.304128498984,
+      "y": -92.8091085909021,
       "width": 1159.7376081112861,
       "height": 705.4377350736941,
       "angle": 0,
@@ -148,11 +148,11 @@
         "type": 3
       },
       "seed": 451696902,
-      "version": 173,
-      "versionNonce": 986142490,
+      "version": 175,
+      "versionNonce": 982800774,
       "isDeleted": false,
       "boundElements": null,
-      "updated": 1789250126106,
+      "updated": 1789250151188,
       "link": "https://www.youtube.com/watch?v=HDio3J9wkjo",
       "locked": false
     }
