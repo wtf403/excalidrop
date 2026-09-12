@@ -29,7 +29,7 @@
       "versionNonce": 1301359707,
       "isDeleted": false,
       "boundElements": null,
-      "updated": 1789172652384,
+      "updated": 1789172787700,
       "link": null,
       "locked": false
     },
@@ -149,8 +149,8 @@
       "type": "arrow",
       "x": 872.234025117201,
       "y": 824.4667290964162,
-      "width": 246.67063902183065,
-      "height": 159.97826069673897,
+      "width": 245.67063902183065,
+      "height": 158.97826069673897,
       "angle": 0,
       "strokeColor": "#1e1e1e",
       "backgroundColor": "transparent",
@@ -170,7 +170,7 @@
       "versionNonce": 269771816,
       "isDeleted": false,
       "boundElements": null,
-      "updated": 1789172652384,
+      "updated": 1789172787700,
       "link": null,
       "locked": false,
       "points": [
@@ -179,8 +179,8 @@
           -0.5
         ],
         [
-          -246.67063902183065,
-          -159.97826069673897
+          -245.67063902183065,
+          -158.97826069673897
         ]
       ],
       "lastCommittedPoint": null,
@@ -216,7 +216,7 @@
       "versionNonce": 1324787420,
       "isDeleted": false,
       "boundElements": null,
-      "updated": 1789172652384,
+      "updated": 1789172787700,
       "link": null,
       "locked": false
     },
@@ -380,7 +380,6 @@
       "index": "aT",
       "roundness": null,
       "seed": 879070003,
-      "version": 5,
       "versionNonce": 1691800595,
       "isDeleted": false,
       "boundElements": null,
@@ -393,7 +392,8 @@
         1,
         1
       ],
-      "crop": null
+      "crop": null,
+      "version": 1
     }
   ],
   "files": {
