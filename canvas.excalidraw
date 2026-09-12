@@ -96,6 +96,36 @@
       ],
       "crop": null,
       "version": 2
+    },
+    {
+      "id": "Nx3KUlX52ov8OpJ3R3J1P",
+      "type": "embeddable",
+      "x": 3210.439033133193,
+      "y": -1472.7612043733268,
+      "width": 480,
+      "height": 956.0054609149607,
+      "angle": 0,
+      "strokeColor": "transparent",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "opacity": 100,
+      "groupIds": [],
+      "frameId": null,
+      "index": "af",
+      "roundness": {
+        "type": 3
+      },
+      "seed": 357160268,
+      "version": 249,
+      "versionNonce": 1843813196,
+      "isDeleted": false,
+      "boundElements": null,
+      "updated": 1789205083132,
+      "link": "https://x.com/MarkKnd/status/2082207361276465611",
+      "locked": false
     }
   ],
   "files": {
