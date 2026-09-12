@@ -865,6 +865,12 @@ export async function checkAccess(ref: RepoRef, token: string): Promise<{ access
 
   const inst = await gh('/user/installations?per_page=100', token).catch(() => null);
   const hasInstallations = !!inst?.installations && (inst.installations as unknown[]).length > 0;
+  // App user tokens (ghu_) / installation tokens (ghs_) act THROUGH the
+  // installation: /repos/*/permissions may report the user's own push, but
+  // writes outside the installation 403 with "Resource not accessible by
+  // integration". So installation coverage is authoritative for app tokens —
+  // only classic OAuth/PAT tokens fall through to the repo permissions check.
+  const isAppToken = /^(ghu_|ghs_)/.test(token.trim());
   if (hasInstallations) {
     // GitHub App token path: check installation-covered repos
     for (const i of inst.installations || []) {
@@ -891,6 +897,9 @@ export async function checkAccess(ref: RepoRef, token: string): Promise<{ access
     // push (owner/collaborator OAuth scope). Fall through to the repo
     // permissions check below instead of hard-denying; the caller keeps the
     // repo-not-covered hint via checkRepoCoverage when it needs the install URL.
+    // Exception (see above): app-scoped tokens can't write outside their
+    // installation at all, so for them uncovered means read-only, no fallback.
+    if (isAppToken) return { access: 'denied', login, detail: 'repo-not-covered' };
   }
 
   const repo = await gh(`/repos/${ref.owner}/${ref.repo}`, token).catch(() => null);

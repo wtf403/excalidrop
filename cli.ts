@@ -885,11 +885,21 @@ async function runTui(): Promise<void> {
     else clack.log.warn(`MCP → ${target} failed: ${r.detail}`);
   }
 
-  try {
-    const scene = await getScene(slug);
+  // Post-deploy readability probe: one retry — right after a deploy the
+  // first API read intermittently fails at TCP level ("fetch failed")
+  // while the retry succeeds, and a false "not readable" scares users.
+  let scene: { elements: any[]; sha: string | null } | null = null;
+  let sceneError: unknown = null;
+  for (let attempt = 0; attempt < 2 && !scene; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 3000));
+    try {
+      scene = await getScene(slug);
+    } catch (e) { sceneError = e; }
+  }
+  if (scene) {
     clack.log.success(`Scene readable: ${scene.elements.length} elements @${CANVAS_BRANCH}.`);
-  } catch (e) {
-    clack.log.warn(`Scene not readable yet: ${(e as Error).message} — draw once to create it.`);
+  } else {
+    clack.log.warn(`Scene not readable yet: ${(sceneError as Error)?.message || sceneError} — draw once to create it.`);
   }
   if (live) clack.log.success('Viewer is serving.');
   else clack.log.warn('Viewer was not live after 7 minutes — check the Pages/Cloudflare build, then retry the URL.');

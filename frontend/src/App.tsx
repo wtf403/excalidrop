@@ -324,6 +324,17 @@ function App(): JSX.Element {
     const handle = registerCanvasWebMCP(() => excalidrawAPIRef.current)
     return () => handle.cleanup()
   }, [excalidrawAPI])
+  // YouTube resume: local-only playback positions for embeds (scene untouched).
+  useEffect(() => {
+    let cleanup: (() => void) | undefined
+    ;(async () => {
+      try {
+        const { installYoutubeResume } = await import('./utils/youtubeResume')
+        cleanup = installYoutubeResume()
+      } catch { /* resume is best-effort */ }
+    })()
+    return () => { try { cleanup?.() } catch {} }
+  }, [])
   // Lets the remote MCP screenshot / drive the viewport through this tab.
   useEffect(() => {
     if (!excalidrawAPI) return
@@ -389,6 +400,46 @@ function App(): JSX.Element {
   const syncInFlightRef = useRef<boolean>(false)
   const suppressAutoSyncCountRef = useRef<number>(0)
   const userInteractedRef = useRef<boolean>(false)
+  // Pasted YouTube embeds render small, with tiny player controls that are
+  // hard to hit. Enlarge each YouTube embed 1.5x once, centered, at paste
+  // time. Only the video frame grows — Excalidraw selection handles and the
+  // YouTube player's own control bar keep their native size, so everything
+  // stays the same proportions but is easier to interact with.
+  const YT_UPSCALE = 1.5
+  const ytEnlargedRef = useRef<Set<string>>(new Set())
+  const isYoutubeLink = (link: unknown): boolean =>
+    typeof link === 'string' &&
+    /(?:youtube\.com\/(?:watch|embed|shorts)|youtu\.be\/)/i.test(link)
+  const enlargeYoutubeEmbeds = (api: ExcalidrawAPIRefValue): boolean => {
+    const els = api.getSceneElements() as Array<any>
+    let changed = false
+    const next = els.map((el) => {
+      if (
+        (el?.type === 'embeddable' || el?.type === 'iframe') &&
+        !el?.isDeleted &&
+        isYoutubeLink(el?.link) &&
+        typeof el?.width === 'number' &&
+        typeof el?.height === 'number' &&
+        !ytEnlargedRef.current.has(el.id)
+      ) {
+        ytEnlargedRef.current.add(el.id)
+        const w = Math.round(el.width * YT_UPSCALE)
+        const h = Math.round(el.height * YT_UPSCALE)
+        changed = true
+        // Grow centered so the paste doesn't jump away from the cursor.
+        return { ...el, width: w, height: h, x: el.x - (w - el.width) / 2, y: el.y - (h - el.height) / 2 }
+      }
+      return el
+    })
+    if (changed) {
+      suppressAutoSyncCountRef.current += 1
+      api.updateScene({ elements: next as any })
+      setTimeout(() => {
+        suppressAutoSyncCountRef.current = Math.max(0, suppressAutoSyncCountRef.current - 1)
+      }, 0)
+    }
+    return changed
+  }
 
   const applySceneUpdateWithoutAutoSync = (
     target: ExcalidrawImperativeAPI | null,
@@ -544,14 +595,25 @@ function App(): JSX.Element {
   }
 
   useEffect(() => {
-    // Only check for server mode if the page is served from a server (not GitHub Pages static)
-    const isStaticHost = window.location.hostname.includes('github.io') ||
+    // Static hosts never serve the API — skip the probe entirely there.
+    // Everywhere else, validate the health PAYLOAD, not just the status:
+    // Cloudflare Pages SPA-fallbacks unknown paths to index.html with HTTP
+    // 200, and the old `r.ok` check mistook that for a live server
+    // (stuck "Offline" pill, empty canvas, WS retry storm).
+    const host = window.location.hostname;
+    const isStaticHost = host.includes('github.io') || host.endsWith('.pages.dev') ||
                          window.location.pathname.startsWith('/excalidrop/')
     if (isStaticHost) {
       initStaticMode()
     } else {
-      fetch('/api/health', { headers: authHeaders() }).then(r => {
-        if (r.ok) { setServerMode(true); connectWebSocket() }
+      fetch('/api/health', { headers: authHeaders() }).then(async (r) => {
+        let live = false
+        if (r.ok) {
+          try {
+            live = (await r.json() as any)?.ok === true
+          } catch { live = false }
+        }
+        if (live) { setServerMode(true); connectWebSocket() }
         else { initStaticMode() }
       }).catch(() => initStaticMode())
     }
@@ -725,7 +787,20 @@ function App(): JSX.Element {
         gh.setToken(j.token, j.refresh_token ?? null, j.expires_in ?? null)
         refreshedForRef.current = null
         setGhToken(j.token as string)
-        showToast('Logged in — canvas unlocked')
+        // Don't claim "unlocked" before the access verdict is in — on repos
+        // outside the app installation the token is valid but read-only.
+        try {
+          const repo = gh.detectRepo()
+          const v = repo ? await gh.checkAccess(repo, j.token as string) : null
+          if (v) { setAccess(v.access); setAccessDetail(v.detail); setGhLogin(v.login) }
+          showToast(!v || v.access === 'editor'
+            ? 'Logged in — canvas unlocked'
+            : v.detail === 'repo-not-covered'
+              ? 'Logged in — repo is not in the Excalidrop app installation (read-only)'
+              : 'Logged in — read-only for this repo')
+        } catch {
+          showToast('Logged in — checking canvas access…')
+        }
       } catch (e) {
         showToast(`Login failed: ${(e as Error).message}`)
       } finally {
@@ -755,7 +830,7 @@ function App(): JSX.Element {
       const gh = await import('./utils/ghSync')
       // Validate before storing: a typo'd/revoked token must not replace a
       // working one, and the user gets the real reason immediately.
-      await gh.checkAccess(ghRepo!, t).catch((e) => {
+      const verdict = await gh.checkAccess(ghRepo!, t).catch((e) => {
         throw new Error(String((e as Error).message).includes('401')
           ? 'That token was rejected (401) — check scopes and expiry.'
           : (e as Error).message)
@@ -763,9 +838,16 @@ function App(): JSX.Element {
       gh.setToken(t)
       refreshedForRef.current = null
       setGhToken(t)
+      setAccess(verdict.access)
+      setAccessDetail(verdict.detail)
+      setGhLogin(verdict.login)
       setLoginOpen(false)
       setTokenInput('')
-      showToast('Logged in — canvas unlocked')
+      showToast(verdict.access === 'editor'
+        ? 'Logged in — canvas unlocked'
+        : verdict.detail === 'repo-not-covered'
+          ? 'Logged in — repo is not in the Excalidrop app installation (read-only)'
+          : 'Logged in — read-only for this repo')
     } catch (e) {
       setLoginError((e as Error).message || 'Login failed.')
     } finally {
@@ -1042,9 +1124,15 @@ function App(): JSX.Element {
       if (!res) {
         // Surface the reason in the pill — silently staying on "Unsaved
         // changes" with no diagnosis is how the 422 outage went unnoticed.
+        // App-scoped tokens outside the installation 403 with "Resource not
+        // accessible by integration" — translate to the actionable fix.
         if (!isClosing) {
           setSyncStatus('error')
-          setSyncError(`save failed (${String(pushError || 'network').slice(0, 80)})`)
+          const raw = String(pushError || 'network')
+          const msg = raw.includes('Resource not accessible by integration')
+            ? 'repo not in the Excalidrop app installation — add it, then re-login'
+            : raw.slice(0, 80)
+          setSyncError(`save failed (${msg})`)
         }
         return
       }
@@ -1089,7 +1177,11 @@ function App(): JSX.Element {
       }
       if (!isClosing) {
         setSyncStatus('error')
-        setSyncError(`save failed (${String((error as Error)?.message || 'network').slice(0, 80)})`)
+        const raw = String((error as Error)?.message || 'network')
+        const msg = raw.includes('Resource not accessible by integration')
+          ? 'repo not in the Excalidrop app installation — add it, then re-login'
+          : raw.slice(0, 80)
+        setSyncError(`save failed (${msg})`)
       }
     } finally {
       ghPushInFlightRef.current = false
@@ -1114,6 +1206,12 @@ function App(): JSX.Element {
   const applyLoadedElements = (converted: Partial<ExcalidrawElement>[]): boolean => {
     const api = excalidrawAPIRef.current
     if (!api) return false
+    // Existing YouTube embeds stay as-is — only future pastes upscale.
+    for (const e of converted as Array<any>) {
+      if ((e?.type === 'embeddable' || e?.type === 'iframe') && typeof e?.id === 'string') {
+        ytEnlargedRef.current.add(e.id)
+      }
+    }
     const pre = api.getSceneElements().filter(el => !el.isDeleted)
     if (pre.length > 0 && lastPushedHashRef.current !== null && hashElements(pre) !== lastPushedHashRef.current) {
       const have = new Set(pre.map((e: any) => e.id))
@@ -1212,10 +1310,18 @@ function App(): JSX.Element {
     }
   }
 
+  // Consecutive failed WS reconnects. A real server restart also closes the
+  // socket, so the counter resets on every successful open — it only trips
+  // when the endpoint is persistently unreachable (e.g. a static host that
+  // was misdetected as a server), turning an infinite error storm into one
+  // honest "Offline" plus a handful of logged attempts.
+  const wsFailsRef = useRef<number>(0)
+  const WS_MAX_FAILS = 5
   const connectWebSocket = (): void => {
     if (websocketRef.current && websocketRef.current.readyState === WebSocket.OPEN) {
       return
     }
+    if (wsFailsRef.current >= WS_MAX_FAILS) return
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const wsUrl = `${protocol}//${window.location.host}`
@@ -1223,6 +1329,7 @@ function App(): JSX.Element {
     websocketRef.current = new WebSocket(wsUrl)
 
     websocketRef.current.onopen = () => {
+      wsFailsRef.current = 0
       setIsConnected(true)
 
       if (excalidrawAPI) {
@@ -1242,8 +1349,10 @@ function App(): JSX.Element {
     websocketRef.current.onclose = (event: CloseEvent) => {
       setIsConnected(false)
 
-      // Reconnect after 3 seconds if not a clean close
-      if (event.code !== 1000) {
+      // Reconnect after 3 seconds if not a clean close — bounded, so a
+      // dead endpoint can't spam forever (see wsFailsRef).
+      if (event.code !== 1000 && wsFailsRef.current < WS_MAX_FAILS) {
+        wsFailsRef.current += 1
         setTimeout(connectWebSocket, 3000)
       }
     }
@@ -1882,6 +1991,10 @@ function App(): JSX.Element {
               if (suppressAutoSyncCountRef.current) return
               const api = excalidrawAPIRef.current
               if (!api) return
+              // Newly pasted YouTube iframe: upscale the container, keep
+              // controls native-sized. Runs before the dirty check so the
+              // enlarged size is what gets journaled/synced.
+              if (enlargeYoutubeEmbeds(api)) return
               const h = hashElements(api.getSceneElements().filter((el) => !el.isDeleted))
               if (lastPushedHashRef.current === null || h !== lastPushedHashRef.current) {
                 setGhDirty(true)

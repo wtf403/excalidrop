@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Excalidrop Canvas</title>
     <link rel="icon" type="image/png" href="/drop.png">
     <style>
@@ -47,6 +47,10 @@
             height: 100vh;
             width: 100%;
             position: relative;
+            /* Canvas handles its own camera zoom; kill the browser page-zoom
+               gesture so ctrl/pinch-wheel never scales the document. */
+            touch-action: none;
+            overscroll-behavior: none;
         }
 
         .pill {
