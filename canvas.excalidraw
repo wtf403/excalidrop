@@ -122,35 +122,6 @@
       "locked": false
     },
     {
-      "id": "2_l7bflxdnGmJSzfyOOCx",
-      "type": "embeddable",
-      "x": -535.4022956180884,
-      "y": 222.6214249841487,
-      "width": 560,
-      "height": 840,
-      "angle": 0,
-      "strokeColor": "transparent",
-      "backgroundColor": "transparent",
-      "fillStyle": "solid",
-      "strokeWidth": 2,
-      "strokeStyle": "solid",
-      "roughness": 1,
-      "opacity": 100,
-      "groupIds": [],
-      "frameId": null,
-      "index": "ai",
-      "roundness": {
-        "type": 3
-      },
-      "seed": 368353154,
-      "versionNonce": 923290398,
-      "isDeleted": false,
-      "boundElements": null,
-      "updated": 1789206947892,
-      "link": "https://googlechromelabs.github.io/webmcp-tools/demos/pizza-maker/",
-      "locked": false
-    },
-    {
       "id": "5htQVgY2UmT2M8U18VPhD",
       "type": "freedraw",
       "x": 1782.155358891262,
