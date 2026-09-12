@@ -29,7 +29,7 @@
       "versionNonce": 478964116,
       "isDeleted": false,
       "boundElements": null,
-      "updated": 1789212158984,
+      "updated": 1789212264035,
       "link": null,
       "locked": false
     },
@@ -65,10 +65,10 @@
     {
       "id": "AzfSu4Hfqx2onhtO9sS9O",
       "type": "embeddable",
-      "x": -468.4124462878797,
-      "y": 140.9199107908537,
-      "width": 620.2712382368302,
-      "height": 895.5208777188878,
+      "x": -819.8722061990494,
+      "y": 140.2593899157166,
+      "width": 971.7309981479999,
+      "height": 1329.254112113827,
       "angle": 0,
       "strokeColor": "transparent",
       "backgroundColor": "transparent",
@@ -84,11 +84,11 @@
         "type": 3
       },
       "seed": 1809778595,
-      "versionNonce": 976682356,
+      "versionNonce": 1980723381,
       "isDeleted": false,
       "boundElements": null,
-      "updated": 1789212174061,
-      "link": "https://github.com/wtf403/agents",
+      "updated": 1789212289807,
+      "link": "https://github.com/wtf403/excalidrop",
       "locked": false,
       "version": null
     },
