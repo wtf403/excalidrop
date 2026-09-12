@@ -6,8 +6,8 @@
     {
       "id": "-Y9YVVF7Dr5RbPeK4FpGB",
       "type": "ellipse",
-      "x": 322.890625,
-      "y": 331.18359375,
+      "x": 1327.8638299486547,
+      "y": -933.7549591601799,
       "width": 318.66015625,
       "height": 297.52734375,
       "angle": 0,
@@ -25,19 +25,19 @@
         "type": 2
       },
       "seed": 1272524844,
-      "version": 1,
-      "versionNonce": 478964116,
+      "version": 24,
+      "versionNonce": 392450555,
       "isDeleted": false,
       "boundElements": null,
-      "updated": 1789212264035,
+      "updated": 1789212313865,
       "link": null,
       "locked": false
     },
     {
       "id": "10luJ_FeCamu4wfB_Ap7T",
       "type": "embeddable",
-      "x": 825.8930545862397,
-      "y": -7.268845900165957,
+      "x": 693.932854082949,
+      "y": -1012.9926448573716,
       "width": 560,
       "height": 840,
       "angle": 0,
@@ -55,40 +55,11 @@
         "type": 3
       },
       "seed": 1662287251,
-      "versionNonce": 2145543261,
+      "versionNonce": 705603067,
       "isDeleted": false,
       "boundElements": null,
-      "updated": 1789212073564,
+      "updated": 1789212315015,
       "link": "https://googlechromelabs.github.io/webmcp-tools/demos/pizza-maker/",
-      "locked": false
-    },
-    {
-      "id": "AzfSu4Hfqx2onhtO9sS9O",
-      "type": "embeddable",
-      "x": -819.8722061990494,
-      "y": 140.2593899157166,
-      "width": 971.7309981479999,
-      "height": 1329.254112113827,
-      "angle": 0,
-      "strokeColor": "transparent",
-      "backgroundColor": "transparent",
-      "fillStyle": "solid",
-      "strokeWidth": 2,
-      "strokeStyle": "solid",
-      "roughness": 1,
-      "opacity": 100,
-      "groupIds": [],
-      "frameId": null,
-      "index": "a2",
-      "roundness": {
-        "type": 3
-      },
-      "seed": 1809778595,
-      "versionNonce": 1980723381,
-      "isDeleted": false,
-      "boundElements": null,
-      "updated": 1789212289807,
-      "link": "https://github.com/wtf403/excalidrop",
       "locked": false,
       "version": null
     },
@@ -126,6 +97,144 @@
       ],
       "crop": null,
       "version": 1
+    },
+    {
+      "id": "xVLim2dVm3iOt6OTW_QhF",
+      "type": "embeddable",
+      "x": 1151.301011238192,
+      "y": 2330.132753948781,
+      "width": 480,
+      "height": 480,
+      "angle": 0,
+      "strokeColor": "transparent",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "opacity": 100,
+      "groupIds": [],
+      "frameId": null,
+      "index": "a4",
+      "roundness": {
+        "type": 3
+      },
+      "seed": 1946789979,
+      "version": 2,
+      "versionNonce": 1762123477,
+      "isDeleted": false,
+      "boundElements": null,
+      "updated": 1789212330461,
+      "link": "https://x.com/MarkKnd/status/2082207361276465611",
+      "locked": false
+    },
+    {
+      "id": "WQpNBi2udiGxP69fw1Sjs",
+      "type": "freedraw",
+      "x": 1500.8468672202187,
+      "y": 2420.9546289834243,
+      "width": 664.2468285671002,
+      "height": 1303.2477163465983,
+      "angle": 0,
+      "strokeColor": "#1e1e1e",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "opacity": 100,
+      "groupIds": [],
+      "frameId": null,
+      "index": "a5",
+      "roundness": null,
+      "seed": 1813613979,
+      "version": 19,
+      "versionNonce": 1406234101,
+      "isDeleted": false,
+      "boundElements": null,
+      "updated": 1789212332308,
+      "link": null,
+      "locked": false,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          -0.5052075057556067,
+          0.4907730055911088
+        ],
+        [
+          -1.7754435202259629,
+          0.5918145067421392
+        ],
+        [
+          -15.820212180224189,
+          -22.084785251589892
+        ],
+        [
+          -75.44913235951663,
+          -117.77108684164796
+        ],
+        [
+          -185.569934114013,
+          -314.0658545778383
+        ],
+        [
+          -323.10185168077624,
+          -578.6646770921482
+        ],
+        [
+          -438.28916299299044,
+          -805.0553776711911
+        ],
+        [
+          -521.4607529404811,
+          -980.2613406671373
+        ],
+        [
+          -592.4496247491861,
+          -1135.432217434844
+        ],
+        [
+          -632.5631007061588,
+          -1224.4930834494253
+        ],
+        [
+          -649.4947693990443,
+          -1264.9241184100158
+        ],
+        [
+          -658.4874630014892,
+          -1287.8028011706497
+        ],
+        [
+          -661.9228740406256,
+          -1297.4883507809875
+        ],
+        [
+          -663.149806554603,
+          -1301.0248033212747
+        ],
+        [
+          -663.8282280623312,
+          -1302.0785218332787
+        ],
+        [
+          -664.2468285671002,
+          -1302.6559018398561
+        ],
+        [
+          -664.2468285671002,
+          -1302.6559018398561
+        ]
+      ],
+      "pressures": [],
+      "simulatePressure": true,
+      "lastCommittedPoint": [
+        -664.2468285671002,
+        -1302.6559018398561
+      ]
     }
   ],
   "files": {
