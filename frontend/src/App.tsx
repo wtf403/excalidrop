@@ -579,10 +579,13 @@ function App(): JSX.Element {
       if (cached) ghShaRef.current = cached
     } catch {}
     if (!ghToken) return
-    void fetch(`https://api.github.com/repos/${ghRepo.owner}/${ghRepo.repo}/contents/canvas.excalidraw?ref=${ghRepo.branch}`, {
-      cache: 'no-store',
-      headers: { Authorization: `Bearer ${ghToken}`, Accept: 'application/vnd.github+json' },
-    }).then(async (r) => {
+    void (async () => {
+      const gh = await import('./utils/ghSync')
+      return gh.timedFetch(`https://api.github.com/repos/${ghRepo.owner}/${ghRepo.repo}/contents/canvas.excalidraw?ref=${ghRepo.branch}`, {
+        cache: 'no-store',
+        headers: { Authorization: `Bearer ${ghToken}`, Accept: 'application/vnd.github+json' },
+      })
+    })().then(async (r) => {
       if (!r.ok) return
       const j = await r.json().catch(() => null)
       if (j?.sha) {
@@ -832,7 +835,8 @@ function App(): JSX.Element {
       const failures: string[] = []
       // 1. Authenticated Contents API (fresh raw bytes, works on private repos).
       if (ghToken) {
-        const res = await fetch(`https://api.github.com/repos/${ghRepo.owner}/${ghRepo.repo}/contents/canvas.excalidraw?ref=${ghRepo.branch}`, {
+        const gh = await import('./utils/ghSync')
+        const res = await gh.timedFetch(`https://api.github.com/repos/${ghRepo.owner}/${ghRepo.repo}/contents/canvas.excalidraw?ref=${ghRepo.branch}`, {
           cache: 'no-store',
           headers: { Authorization: `Bearer ${ghToken}`, Accept: 'application/vnd.github.raw' },
         }).catch(() => null)

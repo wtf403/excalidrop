@@ -261,6 +261,20 @@ function printEditorCommands(ids: EditorId[], repo: string): void {
   for (const id of ids) console.log(`## ${EDITOR_LABELS[id]}\n${editorCommand(id, repo)}\n`);
 }
 
+/** Poll a viewer URL until it serves 200 (first builds take minutes). */
+async function waitForLive(url: string, timeoutMs = 5 * 60_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(15000) });
+      if (r.ok) return true;
+      // 404 during initial propagation — keep waiting; anything else too.
+    } catch { /* offline / DNS — keep waiting */ }
+    await new Promise((r) => setTimeout(r, 10000));
+  }
+  return false;
+}
+
 function parseFlag(args: string[], name: string): string | undefined {
   const eq = args.find((a) => a.startsWith(`--${name}=`));
   if (eq) return eq.split('=').slice(1).join('=');
@@ -281,7 +295,7 @@ function parseEditorsFlag(args: string[]): EditorId[] | null {
   return valid;
 }
 
-async function cmdSetup(args: string[], editorOverride?: EditorId[]): Promise<{ repo: string; viewerUrl: string }> {
+async function cmdSetup(args: string[], editorOverride?: EditorId[]): Promise<{ repo: string; viewerUrl: string; live: boolean }> {
   const positional = args.find((a) => !a.startsWith('-') && a.includes('/'));
   const slug = parseFlag(args, 'repo') || positional || detectSlug();
   if (!slug || !/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(slug)) {
@@ -321,6 +335,14 @@ async function cmdSetup(args: string[], editorOverride?: EditorId[]): Promise<{ 
     viewerUrl = viewerUrlFor(slug, 'cloudflare');
   }
 
+  // Don't declare victory until the viewer actually serves — first Pages /
+  // Cloudflare builds take a minute, and "Canvas live" on a 404 wastes a debug
+  // session. Poll the URL (up to 5 min), then report honestly.
+  const live = await waitForLive(viewerUrl);
+  console.log(live ? 'Viewer is serving.' : 'Viewer not live yet — hosting may still be building; retry the URL in a minute.');
+  const appSlug = process.env.EXCALIDROP_APP_SLUG || 'excalidrop';
+  console.log(`Note: browser login stays read-only until the Excalidrop app is installed on ${slug}:\n  https://github.com/apps/${appSlug}/installations/new`);
+
   const root = findProjectRoot(process.cwd());
   fs.writeFileSync(path.join(root, CONFIG_NAME), JSON.stringify({ remote: slug, target, viewerUrl }, null, 2) + '\n');
   const mcpPath = path.join(root, MCP_JSON);
@@ -341,9 +363,9 @@ async function cmdSetup(args: string[], editorOverride?: EditorId[]): Promise<{ 
     for (const id of editors) (installEditor(id, slug) ? installed : manual).push(id);
     if (installed.length) console.log(`Installed into: ${installed.map((i) => EDITOR_LABELS[i]).join(', ')}`);
     if (manual.length) printEditorCommands(manual, slug);
-    return { repo: slug, viewerUrl };
+    return { repo: slug, viewerUrl, live };
   }
-  return { repo: slug, viewerUrl };
+  return { repo: slug, viewerUrl, live };
 }
 
 function cmdMcp(): void {
@@ -458,8 +480,9 @@ async function runTui(): Promise<void> {
   const s = clack.spinner();
   s.start('Publishing viewer + wiring MCP…');
   let viewerUrl: string;
+  let live = false;
   try {
-    ({ viewerUrl } = await cmdSetup(['--no-prompt', slug, `--target=${target}`], editors));
+    ({ viewerUrl, live } = await cmdSetup(['--no-prompt', slug, `--target=${target}`], editors));
     s.stop('Setup complete.');
   } catch (e) {
     s.stop('Setup failed: ' + (e as Error).message);
@@ -480,15 +503,10 @@ async function runTui(): Promise<void> {
   } catch (e) {
     clack.log.warn(`Scene not readable yet: ${(e as Error).message} — draw once to create it.`);
   }
-  try {
-    const r = await fetch(viewerUrl, { signal: AbortSignal.timeout(15000) });
-    if (r.ok) clack.log.success('Viewer is serving.');
-    else clack.log.warn(`Viewer returned HTTP ${r.status} — Pages/Cloudflare may still be building; retry in a minute.`);
-  } catch {
-    clack.log.warn('Viewer not reachable yet — hosting may still be building; retry in a minute.');
-  }
+  if (live) clack.log.success('Viewer is serving.');
+  else clack.log.warn('Viewer was not live after 5 minutes — check the Pages/Cloudflare build, then retry the URL.');
 
-  clack.outro(`Canvas live: ${viewerUrl}`);
+  clack.outro(live ? `Canvas live: ${viewerUrl}` : `Canvas pending: ${viewerUrl}`);
 }
 
 function printHelp(): void {

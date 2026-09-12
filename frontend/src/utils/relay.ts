@@ -80,42 +80,78 @@ export function connectRelay(getApi: ApiGetter, getToken: TokenGetter, getRepo: 
   let ws: WebSocket | null = null;
   let closed = false;
   let retry = 1000;
+  let fails = 0;
 
   let heartbeat: ReturnType<typeof setInterval> | null = null;
+  let relayChecked = false;
   const open = () => {
     if (closed) return;
     const repo = getRepo();
     const token = getToken();
     if (!repo || !token) { setTimeout(open, 5000); return; }
-    try { ws = new WebSocket(wsUrl(`${repo.owner}/${repo.repo}`)); } catch { setTimeout(open, 5000); return; }
-    ws.onopen = () => {
+    // One cheap probe per page load: if this deployment predates the relay
+    // (or it's disabled), don't open — and fail — WebSockets at all.
+    if (!relayChecked) {
+      relayChecked = true;
+      void (async () => {
+        try {
+          const r = await fetch(`${RELAY_URL}/health`, { cache: 'no-store' });
+          const j = await r.json().catch(() => null);
+          if (!j?.relay) return; // no relay here — queue fallback covers rpc
+        } catch { return; }
+        open();
+      })();
+      return;
+    }
+    // Deployed worker missing (or offline): stop hammering after 6 straight
+    // failures — resume on tab refocus / reconnect instead of console spam.
+    if (fails >= 6) return;
+    let sock: WebSocket;
+    try { sock = new WebSocket(wsUrl(`${repo.owner}/${repo.repo}`)); } catch { scheduleRetry(); return; }
+    ws = sock;
+    sock.onopen = () => {
       retry = 1000;
-      try { ws?.send(JSON.stringify({ token })); } catch {}
+      fails = 0;
+      try { sock.send(JSON.stringify({ token })); } catch {}
       // 25s heartbeat keeps the DO room + NAT mapping alive; server replies pong.
       if (heartbeat) clearInterval(heartbeat);
-      heartbeat = setInterval(() => { try { ws?.send(JSON.stringify({ type: 'ping' })); } catch {} }, 25_000);
+      heartbeat = setInterval(() => { try { sock.send(JSON.stringify({ type: 'ping' })); } catch {} }, 25_000);
     };
-    ws.onmessage = async (ev) => {
+    sock.onmessage = (ev) => {
       let msg: any;
       try { msg = JSON.parse(ev.data); } catch { return; }
       if (msg?.type !== 'relay_rpc' || !msg.reqId) return;
-      try {
-        const data = await execute(msg.method, msg.args || {}, getApi);
-        ws?.send(JSON.stringify({ reqId: msg.reqId, ok: true, data }));
-      } catch (e) {
-        try { ws?.send(JSON.stringify({ reqId: msg.reqId, ok: false, error: (e as Error).message })); } catch {}
-      }
+      void (async () => {
+        try {
+          const data = await execute(msg.method, msg.args || {}, getApi);
+          try { sock.send(JSON.stringify({ reqId: msg.reqId, ok: true, data })); } catch {}
+        } catch (e) {
+          try { sock.send(JSON.stringify({ reqId: msg.reqId, ok: false, error: (e as Error).message })); } catch {}
+        }
+      })().catch(() => {});
     };
-    ws.onclose = () => { ws = null; if (heartbeat) clearInterval(heartbeat); if (!closed) setTimeout(open, Math.min(retry *= 2, 30000)); };
-    ws.onerror = () => { try { ws?.close(); } catch {} };
+    const scheduleRetry = (): void => {
+      fails += 1;
+      ws = null;
+      if (heartbeat) clearInterval(heartbeat);
+      if (!closed && fails < 6) setTimeout(open, Math.min(retry *= 2, 30000));
+    };
+    sock.onclose = scheduleRetry;
+    sock.onerror = () => { try { sock.close(); } catch {} };
   };
+  const onVisible = (): void => {
+    if (!closed && document.visibilityState === 'visible' && !ws) { fails = 0; retry = 1000; open(); }
+  };
+  document.addEventListener('visibilitychange', onVisible);
+  window.addEventListener('online', onVisible);
   open();
-  return { cleanup: () => { closed = true; if (heartbeat) clearInterval(heartbeat); try { ws?.close(); } catch {} } };
+  return { cleanup: () => { closed = true; if (heartbeat) clearInterval(heartbeat); document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('online', onVisible); try { ws?.close(); } catch {} } };
 }
 
 
 async function gh(pathname: string, token: string, init?: RequestInit): Promise<any> {
-  const r = await fetch(`https://api.github.com${pathname}`, {
+  const { timedFetch } = await import('./ghSync');
+  const r = await timedFetch(`https://api.github.com${pathname}`, {
     ...init,
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json', ...(init?.headers || {}) },
   });
@@ -125,6 +161,7 @@ async function gh(pathname: string, token: string, init?: RequestInit): Promise<
 
 export function startCommandQueue(getApi: ApiGetter, getToken: TokenGetter, getRepo: RepoGetter, intervalMs = 8000): RelayHandle {
   let stop = false;
+  let interval = intervalMs;
   const seen = new Set<string>();
   const tick = async () => {
     if (stop) return;
@@ -133,7 +170,14 @@ export function startCommandQueue(getApi: ApiGetter, getToken: TokenGetter, getR
       const token = getToken();
       if (repo && token && getApi()) {
         const slug = `${repo.owner}/${repo.repo}`;
-        const list = await gh(`/repos/${slug}/contents/commands?ref=${repo.branch}`, token).catch(() => null);
+        // No queue ever used on this repo (404): back off to 60s instead of
+        // burning API quota every 8s for the tab's whole lifetime.
+        let missing = false;
+        const list = await gh(`/repos/${slug}/contents/commands?ref=${repo.branch}`, token).catch((e) => {
+          if (String((e as Error)?.message || '').includes('404')) missing = true;
+          return null;
+        });
+        interval = missing ? 60_000 : intervalMs;
         const files: any[] = Array.isArray(list) ? list : [];
         for (const f of files.slice(-5)) {
           const name: string = f.name || '';
@@ -150,7 +194,7 @@ export function startCommandQueue(getApi: ApiGetter, getToken: TokenGetter, getR
         if (seen.size > 200) { const arr = [...seen]; arr.slice(0, 100).forEach((k) => seen.delete(k)); }
       }
     } catch { /* offline — retry next tick */ }
-    if (!stop) setTimeout(tick, intervalMs);
+    if (!stop) setTimeout(tick, interval);
   };
   setTimeout(tick, 4000);
   return { cleanup: () => { stop = true; } };

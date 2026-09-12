@@ -68,7 +68,7 @@ export default {
     if (url.pathname === '/relay' || url.pathname.startsWith('/rpc/')) {
       if (!env.RELAY) return json({ error: 'relay not configured (missing durable object binding)' }, 500, cors);
       const m = url.pathname.startsWith('/rpc/')
-        ? url.pathname.slice('/rpc/'.length).split('/')[0]
+        ? url.pathname.slice('/rpc/'.length).split('/').slice(0, 2).join('/')
         : url.searchParams.get('repo');
       const repo = decodeURIComponent(m || '').split('/').slice(0, 2).join('/');
       if (!/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(repo)) return json({ error: 'bad repo' }, 400, cors);

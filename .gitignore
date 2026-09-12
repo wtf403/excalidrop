@@ -1,5 +1,6 @@
-# Excalidrop per-project port (machine-local, picked free on `excalidrop init`)
+# Excalidrop local wiring (machine-specific repo target + MCP entry)
 .excalidrop.json
+.mcp.json
 
 # Dependencies
 node_modules/

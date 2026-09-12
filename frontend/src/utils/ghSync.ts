@@ -76,6 +76,30 @@ function anonBackoffMs(res: Response): number {
  *  already holds the latest commit (ETag 304 or same SHA) so it can skip the
  *  scene download. backedOff means the API quota is exhausted — use the
  *  branch raw fallback until the window resets. */
+// Every network call in the viewer goes through here. api.github.com served
+// from a cold keep-alive pool intermittently hangs at TCP level with no
+// rejection — without a timeout a single stalled socket wedges boot
+// ("Checking access…" forever) since checkAccess awaits gh() with no guard.
+export async function timedFetch(url: string, init: RequestInit = {}, ms = 20000): Promise<Response> {
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(ms) });
+  } catch (e) {
+    // Older browsers lack AbortSignal.timeout — fall back to a manual race.
+    if (typeof (AbortSignal as any).timeout !== 'function' && !(init as any).signal) {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      try {
+        const gated = new Promise<never>((_, rej) => {
+          timer = setTimeout(() => rej(new Error(`fetch timed out after ${ms}ms: ${url}`)), ms);
+        });
+        return await Promise.race([fetch(url, init), gated]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+    throw e;
+  }
+}
+
 export async function fetchBranchHeadSha(
   ref: RepoRef,
 ): Promise<{ sha: string | null; notModified: boolean; backedOff: boolean }> {
@@ -88,7 +112,7 @@ export async function fetchBranchHeadSha(
     const headers: Record<string, string> = { Accept: 'application/vnd.github+json' };
     const etag = lastHeadEtag.get(key);
     if (etag) headers['If-None-Match'] = etag;
-    const res = await fetch(
+    const res = await timedFetch(
       `https://api.github.com/repos/${ref.owner}/${ref.repo}/git/ref/heads/${ref.branch}`,
       { cache: 'no-store', headers },
     );
@@ -295,7 +319,7 @@ export async function tryRefreshToken(clientId: string, opts: { force?: boolean;
 }
 
 async function gh(path: string, token: string, init?: RequestInit): Promise<any> {
-  const r = await fetch(`https://api.github.com${path}`, {
+  const r = await timedFetch(`https://api.github.com${path}`, {
     cache: 'no-store',
     ...init,
     headers: {
@@ -461,7 +485,7 @@ async function syncAssets(
       const assetPath = assetPathFor(f.id, mime);
       // Skip if already committed.
       try {
-        const head = await fetch(
+        const head = await timedFetch(
           `https://api.github.com/repos/${ref.owner}/${ref.repo}/contents/${assetPath}?ref=${ref.branch}`,
           { cache: 'no-store', headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' } },
         );
@@ -654,7 +678,7 @@ export async function loadStaticScene(ref?: RepoRef, token?: string | null): Pro
   // `Accept: application/vnd.github.raw` header is required to get bytes.
   if (ref && token) {
     try {
-      const res = await fetch(`https://api.github.com/repos/${ref.owner}/${ref.repo}/contents/canvas.excalidraw?ref=${ref.branch}`, {
+      const res = await timedFetch(`https://api.github.com/repos/${ref.owner}/${ref.repo}/contents/canvas.excalidraw?ref=${ref.branch}`, {
         cache: 'no-store',
         headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github.raw' },
       });
@@ -668,7 +692,7 @@ export async function loadStaticScene(ref?: RepoRef, token?: string | null): Pro
   // without auth (60 req/hr/IP) when asked for raw bytes directly.
   if (ref && !token) {
     try {
-      const res = await fetch(`https://api.github.com/repos/${ref.owner}/${ref.repo}/contents/canvas.excalidraw?ref=${ref.branch}`, {
+      const res = await timedFetch(`https://api.github.com/repos/${ref.owner}/${ref.repo}/contents/canvas.excalidraw?ref=${ref.branch}`, {
         cache: 'no-store',
         headers: { Accept: 'application/vnd.github.raw' },
       });
@@ -846,9 +870,19 @@ export async function checkAccess(ref: RepoRef, token: string): Promise<{ access
       const repos = await gh(`/user/installations/${(i as any).id}/repositories?per_page=100`, token).catch(() => null);
       const hit = (repos?.repositories || []).find((r: any) => r.full_name.toLowerCase() === wanted);
       if (hit) {
+        // collaborators/permission 403s for user tokens ("Resource not
+        // accessible by integration") — fall back to the repo endpoint,
+        // which reports this token's own permissions and never 403s here.
         const perms = await gh(`/repos/${ref.owner}/${ref.repo}/collaborators/${login}/permission`, token).catch(() => null);
         const p = (perms?.permission || '') as string;
         if (p === 'read' || p === 'triage') return { access: 'viewer', login, detail: null };
+        if (p === 'admin' || p === 'maintain' || p === 'write') return { access: 'editor', login, detail: null };
+        if (!p) {
+          const repo = await gh(`/repos/${ref.owner}/${ref.repo}`, token).catch(() => null);
+          if (repo?.permissions && !(repo.permissions.push || repo.permissions.admin || repo.permissions.maintain)) {
+            return { access: 'viewer', login, detail: null };
+          }
+        }
         return { access: 'editor', login, detail: null };
       }
     }
