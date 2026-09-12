@@ -77,6 +77,39 @@
             margin-left: 0.5rem;
         }
 
+        /* Save button portaled into Excalidraw's mobile side island
+           (.mobile-misc-tools-container): matches the 2rem ToolIcon
+           squares stacked there. Yellow when there are unsaved changes. */
+        .excalidraw .mobile-save-btn {
+            width: var(--default-button-size);
+            height: var(--default-button-size);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: transparent;
+            color: var(--icon-fill-color);
+            border: none;
+            border-radius: var(--border-radius-lg);
+            cursor: pointer;
+            padding: 0;
+        }
+
+        .excalidraw .mobile-save-btn:hover {
+            background: var(--button-hover-bg);
+        }
+
+        .excalidraw .mobile-save-btn.dirty {
+            background: #ffd60a;
+            color: #1e1e1e;
+        }
+
+        .excalidraw .mobile-save-btn svg {
+            width: 16px;
+            height: 16px;
+            display: block;
+            flex: none;
+        }
+
         /* Flat look for Excalidraw chrome around the pill. */
         .excalidraw button,
         .excalidraw .App-menu_top__left,

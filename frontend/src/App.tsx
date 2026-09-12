@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import {
   Excalidraw,
   Footer,
@@ -1660,6 +1661,42 @@ function App(): JSX.Element {
       </div>
   )
 
+  // Mobile save button, portaled into Excalidraw's own side island
+  // (.mobile-misc-tools-container: Library / lock / hand stack on the
+  // right edge). <Footer> never renders on phones and renderTopRightUI
+  // lands beside the crowded shapes toolbar, so this is the only slot
+  // that puts Save next to the other mobile canvas actions.
+  // Rendered as a sibling of <Excalidraw> (not a child — Excalidraw only
+  // accepts its known children components).
+  const MobileSavePortal = (): JSX.Element | null => {
+    const [target, setTarget] = useState<Element | null>(null)
+    useEffect(() => {
+      const find = () => setTarget(document.querySelector('.excalidraw .mobile-misc-tools-container'))
+      find()
+      window.addEventListener('resize', find)
+      return () => window.removeEventListener('resize', find)
+    }, [])
+    if (!target || serverMode || access !== 'editor') return null
+    const label = syncStatus === 'syncing' ? 'Saving…'
+      : ghDirty ? 'Unsaved changes — tap to save'
+      : lastSyncTime ? `Saved ${formatSyncTime(lastSyncTime)}` : 'Saved — tap to save'
+    return createPortal(
+      <button
+        className={`mobile-save-btn${ghDirty || syncStatus === 'syncing' ? ' dirty' : ''}`}
+        title={label}
+        aria-label="Save now"
+        onClick={() => { void pushToGitHub(false) }}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+          <polyline points="17 21 17 13 7 13 7 21" />
+          <polyline points="7 3 7 8 15 8" />
+        </svg>
+      </button>,
+      target,
+    )
+  }
+
   return (
     <div className="app">
       {/* Overlays: toast + login. The save/status block lives in
@@ -1776,6 +1813,7 @@ function App(): JSX.Element {
               {saveBlock}
             </Footer>
           </Excalidraw>
+          <MobileSavePortal />
         </div>
       </div>
     </div>
