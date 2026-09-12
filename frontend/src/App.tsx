@@ -918,15 +918,39 @@ function App(): JSX.Element {
     }
   }
 
+  const lastHiddenAtRef = useRef<number | null>(null)
   useEffect(() => {
     if (serverMode) return
     // Anonymous Contents API quota is 60 req/hr/IP (vs 5000 with a token):
     // a 20s tick alone burns 180/hr. Poll viewers at 90s (40/hr headroom for
     // boot lookups); editors keep the 20s tick.
     const intervalMs = ghToken ? 20000 : 90000
-    const id = setInterval(() => { void pushToGitHub(false); void pullFromGitHub() }, intervalMs)
+    const tick = (): void => {
+      // Only hit the GitHub API while the tab is focused/visible — background
+      // tabs skip the tick entirely (saves quota + battery).
+      if (document.hidden) return
+      void pushToGitHub(false); void pullFromGitHub()
+    }
+    const id = setInterval(tick, intervalMs)
+    const onVis = (): void => {
+      if (document.hidden) {
+        lastHiddenAtRef.current = Date.now()
+        return
+      }
+      // Refocused: poll immediately if we were unfocused for >20s so the
+      // canvas doesn't sit stale until the next interval tick.
+      const awayMs = lastHiddenAtRef.current != null ? Date.now() - lastHiddenAtRef.current : Infinity
+      lastHiddenAtRef.current = null
+      if (awayMs > 20000) tick()
+    }
+    document.addEventListener('visibilitychange', onVis)
+    window.addEventListener('focus', onVis)
+    window.addEventListener('blur', onVis)
     return () => {
       clearInterval(id)
+      document.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('focus', onVis)
+      window.removeEventListener('blur', onVis)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverMode, ghToken, ghRepo, ghDirty, excalidrawAPI, access])
