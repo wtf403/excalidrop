@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import {
   Excalidraw,
+  Footer,
   MainMenu,
   convertToExcalidrawElements,
   CaptureUpdateAction,
@@ -118,11 +119,12 @@ const readLocalSnapshot = (key: string): LocalSnapshot | null => {
   }
 }
 
-const writeLocalSnapshot = (key: string, elements: any[], base: any[]): void => {
+const writeLocalSnapshot = (key: string, elements: any[], base: any[]): boolean => {
   try {
     localStorage.setItem(key, JSON.stringify({ updatedAt: Date.now(), elements, base }))
+    return true
   } catch {
-    /* quota exceeded — interval autosave remains the fallback */
+    return false
   }
 }
 
@@ -430,13 +432,14 @@ function App(): JSX.Element {
 
   // Synchronous journal write of the current scene. Safe to call from
   // beforeunload/pagehide — no network, no await, cannot be torn down.
-  const journalScene = (): void => {
+  // Returns whether the snapshot landed (false = storage unavailable/full).
+  const journalScene = (): boolean => {
     const api = excalidrawAPIRef.current
-    if (!api) return
+    if (!api) return false
     try {
       const els = api.getSceneElements().filter((el) => !el.isDeleted)
-      writeLocalSnapshot(snapshotKeyFor(ghRepoRef.current), els as any, baseElementsRef.current)
-    } catch { /* non-fatal */ }
+      return writeLocalSnapshot(snapshotKeyFor(ghRepoRef.current), els as any, baseElementsRef.current)
+    } catch { return false }
   }
 
   // Debounced journaling for the onChange hot path.
@@ -860,7 +863,7 @@ function App(): JSX.Element {
   // visibilitychange(hidden) fires while the page is still alive, so its
   // async push is the one that usually lands.
   const flushRef = useRef<() => void>(() => {})
-  const journalRef = useRef<() => void>(() => {})
+  const journalRef = useRef<() => boolean>(() => false)
   const serverModeRef = useRef(serverMode)
   serverModeRef.current = serverMode
   flushRef.current = () => {
@@ -879,10 +882,14 @@ function App(): JSX.Element {
       flushRef.current()
     }
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      journalRef.current()
+      const journaled = journalRef.current()
       flushRef.current()
-      // Show confirmation dialog only if there are unsaved changes
-      if (ghDirty) {
+      // The close path SAVES: the sync journal write above is guaranteed, the
+      // keepalive flush is best-effort, and boot restores + pushes whatever
+      // never made it over the network. So no nag dialog when the journal
+      // landed — warn only if even the local snapshot failed with unsaved
+      // work that would actually be lost.
+      if (!journaled && ghDirty) {
         e.preventDefault()
         e.returnValue = '' // Standard way to trigger browser confirmation
       }
@@ -1590,12 +1597,10 @@ function App(): JSX.Element {
     }
   }
 
-  return (
-    <div className="app">
-      {/* Floating status pill (no header — canvas is fullscreen).
-          No login UI: a token arrives silently (agent hands a #token= link
-          or has stored one before); without it the canvas is read-only. */}
-      <footer id="contentinfo">
+  // Save/status block, docked in Excalidraw's own <Footer/> (bottom-left
+  // bar) per the Excalidraw API — no floating overlay, no z-index fights.
+  // <Footer> only renders on desktop; phones get the Save item in MainMenu.
+  const saveBlock = (
       <div className="pill" title={libraryError || syncError || undefined}>
         <div className={`status-dot ${(serverMode ? isConnected : access === 'editor') && !syncError ? 'status-connected' : 'status-disconnected'}`}></div>
         <span>
@@ -1653,6 +1658,13 @@ function App(): JSX.Element {
           </>
         )}
       </div>
+  )
+
+  return (
+    <div className="app">
+      {/* Overlays: toast + login. The save/status block lives in
+          Excalidraw's <Footer/> (see below), not here. */}
+      <footer id="contentinfo">
       {toast && (
         <div className="toast" role="status" onClick={() => setToast(null)}>
           <span>{toast}</span>
@@ -1735,6 +1747,21 @@ function App(): JSX.Element {
               <MainMenu.DefaultItems.Export />
               <MainMenu.DefaultItems.SaveAsImage />
               <MainMenu.Separator />
+              {!serverMode && access === 'editor' && (
+                <MainMenu.Item
+                  icon={
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                      <polyline points="17 21 17 13 7 13 7 21" />
+                      <polyline points="7 3 7 8 15 8" />
+                    </svg>
+                  }
+                  shortcut="Ctrl+S"
+                  onSelect={() => { void pushToGitHub(false) }}
+                >
+                  Save now
+                </MainMenu.Item>
+              )}
               <MainMenu.DefaultItems.ClearCanvas />
               <MainMenu.DefaultItems.ChangeCanvasBackground />
               <MainMenu.DefaultItems.ToggleTheme />
@@ -1742,6 +1769,12 @@ function App(): JSX.Element {
               <MainMenu.DefaultItems.SearchMenu />
               <MainMenu.DefaultItems.CommandPalette />
             </MainMenu>
+            {/* Desktop save/status block, docked in Excalidraw's footer bar.
+                (<Footer> only renders on desktop — phones use the
+                Save item in the hamburger menu above.) */}
+            <Footer>
+              {saveBlock}
+            </Footer>
           </Excalidraw>
         </div>
       </div>

@@ -67,6 +67,13 @@
             box-shadow: none;
         }
 
+        /* Save/status block when docked in Excalidraw's own <Footer/>
+           (bottom-left bar): static flow instead of the floating overlay. */
+        .excalidraw .pill {
+            position: static;
+            z-index: auto;
+        }
+
         /* Flat look for Excalidraw chrome around the pill. */
         .excalidraw button,
         .excalidraw .App-menu_top__left,
@@ -74,7 +81,19 @@
             box-shadow: none !important;
         }
 
-        /* Icon-only save button docked inside the pill. */
+        /* Icon-only save button docked inside the pill.
+           Specificity beats `.pill button` so the icon button keeps
+           zero padding and a pinned 16px glyph. */
+        .pill .save-icon-btn {
+            padding: 0;
+        }
+
+        .save-icon-btn svg {
+            width: 16px;
+            height: 16px;
+            display: block;
+            flex: none;
+        }
         .save-icon-btn {
             display: flex;
             align-items: center;
