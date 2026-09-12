@@ -24,11 +24,120 @@ export function detectRepo(): RepoRef | null {
   return null;
 }
 
-// Direct git-blob URL for the scene file. Raw serves CORS * with a 300s edge
-// TTL, so anonymous polls add a cache-buster and never depend on a Pages
-// build; saves commit straight to this branch via the Contents API.
+// Direct git-blob URL for the scene file. Raw serves CORS * but with a ~300s
+// Fastly edge TTL keyed on the path — the query string is IGNORED for cache
+// purposes, so `?t=...` cache-busters do NOT beat staleness (verified: same
+// etag + `x-cache: HIT` + growing `source-age` with and without `?t=`).
+// Branch-pinned raw can therefore lag a save by up to ~5min. Commit-pinned
+// raw (`rawSceneUrlForCommit`) is immutable and never stale — resolve the
+// branch head SHA via the API, then fetch raw at that SHA. Saves commit
+// straight to this branch via the Contents API.
 export function rawSceneUrl(ref: RepoRef): string {
   return `https://raw.githubusercontent.com/${ref.owner}/${ref.repo}/${ref.branch}/canvas.excalidraw`;
+}
+
+// Immutable, never-stale variant: a commit SHA in the path is a distinct CDN
+// object, so a HIT is the correct bytes (unlike the branch path above).
+export function rawSceneUrlForCommit(ref: RepoRef, commitSha: string): string {
+  return `https://raw.githubusercontent.com/${ref.owner}/${ref.repo}/${commitSha}/canvas.excalidraw`;
+}
+
+// --- Anonymous fresh reads (no token, public repos only) -------------------
+// Unauthenticated Contents API calls work (CORS *) but are limited to
+// 60 req/hour/IP (vs 5000 with a token). A 20s poll alone burns 180/hr, so:
+// - polls resolve the tiny branch-head ref first and skip the scene fetch
+//   entirely when the commit SHA hasn't moved (plus ETag 304s, which don't
+//   serve stale bytes);
+// - on 403/429 we back off until the rate-limit window resets and fall back
+//   to the (possibly stale) branch raw blob meanwhile instead of erroring.
+const anonBackoffUntil = new Map<string, number>();
+const lastHeadSha = new Map<string, string>();
+const lastHeadEtag = new Map<string, string>();
+
+function anonKey(ref: RepoRef): string {
+  return `${ref.owner}/${ref.repo}/${ref.branch}`;
+}
+
+function anonBackoffMs(res: Response): number {
+  try {
+    if (res.status === 403 || res.status === 429) {
+      const retryAfter = Number(res.headers.get('retry-after') || 0);
+      if (retryAfter > 0) return retryAfter * 1000 + 1000;
+      const remaining = res.headers.get('x-ratelimit-remaining');
+      const reset = Number(res.headers.get('x-ratelimit-reset') || 0);
+      if (remaining === '0' && reset > 0) return Math.max(0, reset * 1000 - Date.now()) + 5000;
+      return 5 * 60 * 1000;
+    }
+  } catch { /* fall through */ }
+  return 0;
+}
+
+/** Resolve the branch head commit SHA. Returns notModified when the caller
+ *  already holds the latest commit (ETag 304 or same SHA) so it can skip the
+ *  scene download. backedOff means the API quota is exhausted — use the
+ *  branch raw fallback until the window resets. */
+export async function fetchBranchHeadSha(
+  ref: RepoRef,
+): Promise<{ sha: string | null; notModified: boolean; backedOff: boolean }> {
+  const key = anonKey(ref);
+  const cached = lastHeadSha.get(key) || null;
+  if (Date.now() < (anonBackoffUntil.get(key) || 0)) {
+    return { sha: cached, notModified: true, backedOff: true };
+  }
+  try {
+    const headers: Record<string, string> = { Accept: 'application/vnd.github+json' };
+    const etag = lastHeadEtag.get(key);
+    if (etag) headers['If-None-Match'] = etag;
+    const res = await fetch(
+      `https://api.github.com/repos/${ref.owner}/${ref.repo}/git/ref/heads/${ref.branch}`,
+      { cache: 'no-store', headers },
+    );
+    if (res.status === 304) return { sha: cached, notModified: true, backedOff: false };
+    if (!res.ok) {
+      const wait = anonBackoffMs(res);
+      if (wait > 0) anonBackoffUntil.set(key, Date.now() + wait);
+      return { sha: cached, notModified: true, backedOff: wait > 0 };
+    }
+    const et = res.headers.get('etag');
+    if (et) lastHeadEtag.set(key, et);
+    const j = await res.json().catch(() => null);
+    const sha = j?.object?.sha as string | undefined;
+    if (!sha) return { sha: cached, notModified: true, backedOff: false };
+    const moved = sha !== cached;
+    lastHeadSha.set(key, sha);
+    return { sha, notModified: !moved, backedOff: false };
+  } catch {
+    return { sha: cached, notModified: true, backedOff: false };
+  }
+}
+
+/** Fetch the scene at a pinned commit — immutable CDN object, never stale. */
+export async function fetchPinnedScene(
+  ref: RepoRef, commitSha: string,
+): Promise<{ elements: any[]; files?: Record<string, unknown> }> {
+  const r = await fetch(rawSceneUrlForCommit(ref, commitSha), { cache: 'no-store' });
+  if (!r.ok) throw new Error(`pinned blob ${r.status}`);
+  const j = await r.json();
+  return { elements: j.elements || [], files: j.files || {} };
+}
+
+export type AnonPollResult =
+  | { status: 'fresh'; elements: any[]; files?: Record<string, unknown> }
+  | { status: 'not-modified' }
+  | { status: 'backed-off' };
+
+/** Anonymous poll tick: 1 tiny ref lookup + immutable CDN fetch only when the
+ *  head moved. Never throws — callers fall back to the branch raw blob. */
+export async function pollAnonymousScene(ref: RepoRef): Promise<AnonPollResult> {
+  const head = await fetchBranchHeadSha(ref);
+  if (head.backedOff) return { status: 'backed-off' };
+  if (!head.sha || head.notModified) return { status: 'not-modified' };
+  try {
+    const doc = await fetchPinnedScene(ref, head.sha);
+    return { status: 'fresh', elements: doc.elements, files: doc.files };
+  } catch {
+    return { status: 'backed-off' };
+  }
 }
 
 const TOKEN_KEY = 'excalidrop_gh_token';
@@ -204,8 +313,6 @@ async function gh(path: string, token: string, init?: RequestInit): Promise<any>
 // Union of two element lists by id. `incoming` wins per id; ids only in
 // `base` are preserved. Used on 409 conflicts so concurrent writers compose
 // instead of last-writer-wins wiping the other side's work.
-// Limitation: an element deleted locally is resurrected if it still exists
-// upstream at conflict time — re-delete afterwards; creations are never lost.
 export function mergeSceneElements(base: any[], incoming: any[]): any[] {
   return threeWayMerge(base, base, incoming).merged;
 }
@@ -240,6 +347,7 @@ export interface MergeResult {
 // - Unchanged on one side → take the other side.
 // - Changed identically → keep either.
 // - Changed differently (same id) → newer updatedAt wins, id in conflicts.
+// - Deleted on one side + untouched on the other → honor the delete.
 // - Deleted on one side + edited on the other → edit wins (resurrect), id in
 //   conflicts so the UI can let the user re-delete.
 export function threeWayMerge(base: any[], local: any[], remote: any[]): MergeResult {
@@ -252,18 +360,21 @@ export function threeWayMerge(base: any[], local: any[], remote: any[]): MergeRe
   for (const id of new Set([...b.keys(), ...l.keys(), ...r.keys()])) {
     const be = b.get(id), le = l.get(id), re = r.get(id);
     if (le && !re) {
-      if (be && elementSig(be) !== elementSig(le)) {
-        merged.push(re ?? le); // remote deleted, local edited → edit wins
+      if (!be) merged.push(le); // created locally — keep
+      else if (elementSig(be) !== elementSig(le)) {
+        merged.push(le); // remote deleted, local edited → edit wins
         conflicts.push(id);
-      } else merged.push(le); // created locally or deleted remotely untouched
+      }
+      // else: deleted remotely, untouched locally → honor the delete
       continue;
     }
     if (!le && re) {
-      if (be && elementSig(be) !== elementSig(re)) {
+      if (!be) { merged.push(re); added++; } // created remotely — keep
+      else if (elementSig(be) !== elementSig(re)) {
         merged.push(re); // local deleted, remote edited → edit wins
         conflicts.push(id);
-      } else merged.push(re); // created remotely or deleted locally untouched
-      if (!be) added++;
+      }
+      // else: deleted locally, untouched remotely → honor the delete
       continue;
     }
     if (!le && !re) continue; // deleted both sides
@@ -300,9 +411,29 @@ function assetPathFor(id: string, mime: string): string {
   return `assets/${id}.${extForMime(mime)}`;
 }
 
+// Ids already confirmed present upstream (via HEAD-check or successful PUT)
+// within this session, plus a localStorage mirror across reloads. Prevents a
+// `GET contents/assets/<id>.*` per image on every save when the canvas source
+// hasn't changed.
+const syncedAssetIds = new Set<string>();
+try {
+  for (const id of (localStorage.getItem('excalidrop_synced_assets') || '').split(',').filter(Boolean)) {
+    syncedAssetIds.add(id);
+  }
+} catch { /* storage unavailable */ }
+function markAssetSynced(id: string): void {
+  if (syncedAssetIds.has(id)) return;
+  syncedAssetIds.add(id);
+  try {
+    const arr = [...syncedAssetIds].slice(-200);
+    localStorage.setItem('excalidrop_synced_assets', arr.join(','));
+  } catch { /* non-fatal */ }
+}
+
 // Commit each image binary to assets/ on the canvas branch so pasted images
 // exist as real files, not just base64 inside canvas.excalidraw. Skips files
-// that already exist upstream (checked via a single GET per file).
+// that already exist upstream (checked via a single GET per file, cached in
+// `syncedAssetIds` so unchanged canvases never re-request).
 async function syncAssets(
   ref: RepoRef, token: string, files: unknown, keepalive: boolean,
 ): Promise<void> {
@@ -311,6 +442,7 @@ async function syncAssets(
   if (withData.length === 0) return;
   await Promise.all(withData.map(async (f) => {
     try {
+      if (syncedAssetIds.has(f.id)) return;
       // Binary images arrive base64-encoded; SVGs may arrive URL-encoded
       // (data:image/svg+xml,... without ;base64). Normalize both to base64.
       let mime: string, b64: string;
@@ -333,7 +465,7 @@ async function syncAssets(
           `https://api.github.com/repos/${ref.owner}/${ref.repo}/contents/${assetPath}?ref=${ref.branch}`,
           { cache: 'no-store', headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' } },
         );
-        if (head.ok) return;
+        if (head.ok) { markAssetSynced(f.id); return; }
       } catch { /* fall through to PUT */ }
       await gh(`/repos/${ref.owner}/${ref.repo}/contents/${assetPath}`, token, {
         method: 'PUT',
@@ -344,6 +476,7 @@ async function syncAssets(
           branch: ref.branch,
         }),
       });
+      markAssetSynced(f.id);
     } catch { /* asset commit is best-effort; scene PUT still carries the dataURL */ }
   }));
 }
@@ -359,12 +492,80 @@ function decodeSceneDoc(b64: string): any | null {
 async function readSceneFile(ref: RepoRef, token: string): Promise<{ sha: string; elements: any[]; files?: any } | null> {
   try {
     const cur = await gh(`/repos/${ref.owner}/${ref.repo}/contents/canvas.excalidraw?ref=${ref.branch}`, token);
-    const doc = decodeSceneDoc(cur.content);
-    if (!doc) return null;
-    return { sha: cur.sha as string, elements: Array.isArray(doc.elements) ? doc.elements : [], files: doc.files };
+    if (!cur || typeof cur.sha !== 'string') return null;
+    // Small file: blob content is inline.
+    if (typeof cur.content === 'string' && cur.content.length > 0) {
+      const doc = decodeSceneDoc(cur.content);
+      if (!doc) return { sha: cur.sha as string, elements: [] };
+      return { sha: cur.sha as string, elements: Array.isArray(doc.elements) ? doc.elements : [], files: doc.files };
+    }
+    // Large file (>~1MB): the Contents API omits the blob (encoding 'none')
+    // but still returns the sha — fetch the blob directly (up to 100MB).
+    // Fall back to sha-only (elements unknown) so the caller's PUT still
+    // supplies `sha` instead of failing with 422 `"sha" wasn't supplied`.
+    // The 409 path re-reads before merging, so no data is lost.
+    try {
+      const blob = await gh(`/repos/${ref.owner}/${ref.repo}/git/blobs/${cur.sha}`, token);
+      if (!blob?.content) return { sha: cur.sha as string, elements: [] };
+      const doc = decodeSceneDoc(blob.content);
+      if (!doc) return { sha: cur.sha as string, elements: [] };
+      return { sha: cur.sha as string, elements: Array.isArray(doc.elements) ? doc.elements : [], files: doc.files };
+    } catch {
+      return { sha: cur.sha as string, elements: [] };
+    }
   } catch {
     return null;
   }
+}
+
+// Contents API payload ceiling: reads already omit blobs past ~1MB, and
+// writes of that size are rejected — route oversize scenes through the Git
+// Data API (blobs up to 100MB) instead of failing every save with 422.
+const CONTENTS_B64_LIMIT = 900_000;
+
+// Write a scene file via the Git Data API: create blob → tree → commit →
+// move the branch ref. Never force-pushes: a non-fast-forward update throws
+// a 409-style error so the caller can merge and retry instead of clobbering.
+async function putLargeFile(
+  ref: RepoRef, token: string, b64: string, message: string,
+  author: { name: string; email: string } | undefined,
+): Promise<string> {
+  const api = `/repos/${ref.owner}/${ref.repo}`;
+  const blob = await gh(`${api}/git/blobs`, token, {
+    method: 'POST',
+    body: JSON.stringify({ content: b64, encoding: 'base64' }),
+  });
+  const refInfo = await gh(`${api}/git/ref/heads/${ref.branch}`, token);
+  const head = refInfo?.object?.sha as string | undefined;
+  if (!head) throw new Error('GitHub 422: branch ref not found');
+  const commit = await gh(`${api}/git/commits/${head}`, token);
+  const tree = await gh(`${api}/git/trees`, token, {
+    method: 'POST',
+    body: JSON.stringify({
+      base_tree: commit?.tree?.sha,
+      tree: [{ path: 'canvas.excalidraw', mode: '100644', type: 'blob', sha: blob.sha }],
+    }),
+  });
+  const made = await gh(`${api}/git/commits`, token, {
+    method: 'POST',
+    body: JSON.stringify({
+      message,
+      tree: tree.sha,
+      parents: [head],
+      ...(author ? { author, committer: author } : {}),
+    }),
+  });
+  try {
+    await gh(`${api}/git/refs/heads/${ref.branch}`, token, {
+      method: 'PATCH',
+      body: JSON.stringify({ sha: made.sha }),
+    });
+  } catch (e) {
+    // Someone committed underneath us — not fast-forward. Report as a 409
+    // so pushScene runs its merge-and-retry path.
+    throw new Error(`GitHub 409: ${(e as Error).message}`);
+  }
+  return blob.sha as string;
 }
 
 async function putSceneFile(
@@ -381,12 +582,19 @@ async function putSceneFile(
       if (me?.login) author = { name: me.login, email: `${me.login}@users.noreply.github.com` };
     } catch { /* fall back to token-owner default */ }
   }
+  const content = encodeSceneDoc(elements, files);
+  // Oversize payloads can't go through the Contents API — same ~1MB ceiling
+  // as reads. The Data API chain can't survive page teardown either, but the
+  // local journal (not this flush) is the close guarantee.
+  if (content.length > CONTENTS_B64_LIMIT) {
+    return putLargeFile(ref, token, content, author ? `${message} — ${author.name}` : message, author);
+  }
   const out = await gh(`/repos/${ref.owner}/${ref.repo}/contents/canvas.excalidraw`, token, {
     method: 'PUT',
     ...(keepalive ? { keepalive: true } : {}),
     body: JSON.stringify({
       message: author ? `${message} — ${author.name}` : message,
-      content: encodeSceneDoc(elements, files),
+      content,
       branch: ref.branch,
       ...(sha ? { sha } : {}),
       ...(author ? { author, committer: author } : {}),
@@ -440,8 +648,10 @@ export async function pushScene(
 
 export async function loadStaticScene(ref?: RepoRef, token?: string | null): Promise<{ elements: any[]; files?: Record<string, unknown> }> {
   // Authenticated Contents API FIRST: raw.githubusercontent.com has a ~300s
-  // edge TTL, so the raw blob serves stale data right after a save. The API
-  // returns the live bytes on every read.
+  // edge TTL, so the branch raw blob serves stale data right after a save.
+  // The API returns the live bytes on every read. NOTE: for files >~1MB the
+  // default JSON envelope omits the blob (`encoding: 'none'`), so the
+  // `Accept: application/vnd.github.raw` header is required to get bytes.
   if (ref && token) {
     try {
       const res = await fetch(`https://api.github.com/repos/${ref.owner}/${ref.repo}/contents/canvas.excalidraw?ref=${ref.branch}`, {
@@ -454,9 +664,38 @@ export async function loadStaticScene(ref?: RepoRef, token?: string | null): Pro
       }
     } catch { /* fall through to raw blob */ }
   }
-  if (ref) {
+  // Anonymous fresh path (public repos, no token): the Contents API works
+  // without auth (60 req/hr/IP) when asked for raw bytes directly.
+  if (ref && !token) {
     try {
-      const r = await fetch(`${rawSceneUrl(ref)}?t=${Date.now()}`, { cache: 'no-store' });
+      const res = await fetch(`https://api.github.com/repos/${ref.owner}/${ref.repo}/contents/canvas.excalidraw?ref=${ref.branch}`, {
+        cache: 'no-store',
+        headers: { Accept: 'application/vnd.github.raw' },
+      });
+      if (res.ok) {
+        const j = await res.json();
+        if (j && Array.isArray(j.elements)) return { elements: j.elements, files: j.files || {} };
+      } else {
+        const wait = anonBackoffMs(res);
+        if (wait > 0) anonBackoffUntil.set(anonKey(ref), Date.now() + wait);
+      }
+    } catch { /* fall through to commit-pinned raw */ }
+    // Commit-pinned raw: immutable CDN object, never stale, costs no API
+    // quota for the bytes (only the tiny ref lookup above/below does).
+    try {
+      const head = await fetchBranchHeadSha(ref);
+      if (head.sha && !head.backedOff) {
+        const doc = await fetchPinnedScene(ref, head.sha);
+        return { elements: doc.elements || [], files: doc.files || {} };
+      }
+    } catch { /* fall through to branch raw */ }
+  }
+  if (ref) {
+    // Last-resort branch raw: may lag saves by up to ~5min (edge TTL keyed on
+    // path — `?t=` does NOT bust it). Kept so viewers still render something
+    // when the API quota is exhausted.
+    try {
+      const r = await fetch(rawSceneUrl(ref), { cache: 'no-store' });
       if (r.ok) {
         const j = await r.json();
         return { elements: j.elements || [], files: j.files || {} };

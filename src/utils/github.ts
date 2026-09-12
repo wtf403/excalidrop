@@ -167,6 +167,10 @@ function extForMime(mime: string): string {
   return map[mime] || 'png';
 }
 
+// Ids already confirmed present upstream this process lifetime. Prevents a
+// `GET contents/assets/<id>.*` per image on every save when nothing changed.
+const syncedAssetIds = new Set<string>();
+
 // Commit image binaries to assets/<fileId>.<ext> on the canvas branch so
 // pasted/MCP-added images exist as real files, not just base64 inside
 // canvas.excalidraw. Best-effort: skips files already present upstream.
@@ -177,15 +181,17 @@ export async function syncAssets(repo: string, files: any): Promise<void> {
   if (withData.length === 0) return;
   await Promise.all(withData.map(async (f) => {
     try {
+      if (syncedAssetIds.has(f.id)) return;
       const m = /^data:([^;]+);base64,(.+)$/s.exec(f.dataURL);
       if (!m) return;
       const assetPath = `assets/${f.id}.${extForMime(f.mimeType || m[1])}`;
       const head = await fetch(`${API}/repos/${repo}/contents/${assetPath}?ref=${CANVAS_BRANCH}`, { headers: headers() });
-      if (head.ok) return;
+      if (head.ok) { syncedAssetIds.add(f.id); return; }
       if (head.status !== 404) throw new Error(`asset check ${head.status}`);
       const body: any = { message: `excalidrop: add image asset ${f.id}`, content: m[2], branch: CANVAS_BRANCH };
       const r = await fetch(`${API}/repos/${repo}/contents/${assetPath}`, { method: 'PUT', headers: headers(), body: JSON.stringify(body) });
       if (!r.ok) throw new Error(`asset put ${r.status}: ${(await r.text()).slice(0, 200)}`);
+      syncedAssetIds.add(f.id);
       logger.info(`Committed ${assetPath}@${CANVAS_BRANCH} in ${repo}`);
     } catch (e) { logger.warn('asset sync failed: ' + (e as Error).message); }
   }));

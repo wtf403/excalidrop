@@ -432,6 +432,24 @@ function App(): JSX.Element {
   // this (not the canvas hash) so Excalidraw re-normalization noise
   // (versionNonce etc.) can never look like a remote change.
   const lastUpstreamRef = useRef<string | null>(null)
+  // Signature of the last-applied upstream `files` map (sorted ids + dataURL
+  // lengths). Guards `addFiles` so polls with an unchanged canvas don't
+  // re-push identical binaries into Excalidraw (and don't re-trigger image
+  // fetches/renders) every 20s.
+  const lastFilesSigRef = useRef<string | null>(null)
+  const filesSig = (files: unknown): string => {
+    try {
+      const list: any[] = Array.isArray(files) ? files as any[] : Object.values((files as any) || {})
+      return JSON.stringify(list.map((f: any) => [f?.id, typeof f?.dataURL === 'string' ? f.dataURL.length : 0, f?.mimeType || '']).sort((a, b) => String(a[0]).localeCompare(String(b[0]))))
+    } catch { return '' }
+  }
+  const applyFilesIfChanged = (api: { addFiles: (f: any) => void }, files: unknown): void => {
+    if (!files) return
+    const sig = filesSig(files)
+    if (sig === lastFilesSigRef.current) return
+    lastFilesSigRef.current = sig
+    api.addFiles(Object.values(files as any))
+  }
   // Monotonic op counter: push increments on start/finish, pull snapshots it
   // before fetching and aborts if it moved — so pull never applies a
   // pre-push snapshot over just-pushed state (stale-fetch race).
@@ -481,8 +499,7 @@ function App(): JSX.Element {
       return false
     }
     // Deliberate clear-canvas closed before the push went out: the journal is
-    // empty but the base matches upstream, so honor the clear instead of
-    // resurrecting (the merge below would resurrect — delete never wins there).
+    // empty but the base matches upstream, so honor the clear.
     if (snap.elements.length === 0 && (snap.base || []).length > 0 &&
         sig(snap.base) === sig(upstream || [])) {
       applySceneUpdateWithoutAutoSync(api, { elements: [], captureUpdate: CaptureUpdateAction.NEVER })
@@ -774,7 +791,7 @@ function App(): JSX.Element {
       const { merged, conflicts, added, updated } = gh.threeWayMerge(baseElementsRef.current, local, remote)
       const converted = convertElementsPreservingImageProps(merged.map(cleanElementForExcalidraw))
       applySceneUpdateWithoutAutoSync(api, { elements: converted, captureUpdate: CaptureUpdateAction.NEVER })
-      if (scene.files) api.addFiles(Object.values(scene.files))
+      if (scene.files) applyFilesIfChanged(api, scene.files)
       baseElementsRef.current = merged
       lastUpstreamRef.current = JSON.stringify(remote)
       lastPushedHashRef.current = hashElements(api.getSceneElements().filter((el) => !el.isDeleted))
@@ -811,10 +828,28 @@ function App(): JSX.Element {
           failures.push(`api ${res.status}`)
         }
       }
-      // 2. Public raw git blob (live on commit; cache-buster beats edge TTL).
+      // 2. Anonymous fresh path (public repos, no token): commit-pinned raw
+      // via pollAnonymousScene — resolves the branch head SHA, then fetches
+      // the immutable raw object at that SHA (never stale, no API quota for
+      // the bytes). Branch raw edge TTL is ~300s keyed on path (`?t=` does
+      // NOT bust it), so plain branch raw is fallback-only.
+      if (!doc && !ghToken) {
+        const gh = await import('./utils/ghSync')
+        try {
+          const polled = await gh.pollAnonymousScene(ghRepo)
+          if (polled.status === 'fresh') {
+            doc = { elements: polled.elements, files: polled.files }
+          } else if (polled.status === 'not-modified') {
+            return
+          }
+          // 'backed-off' (API quota exhausted) falls through to branch raw.
+        } catch {
+          /* fall through to branch raw */
+        }
+      }
       if (!doc) {
         const gh = await import('./utils/ghSync')
-        const res = await fetch(`${gh.rawSceneUrl(ghRepo)}?t=${Date.now()}`, { cache: 'no-store' }).catch(() => null)
+        const res = await fetch(gh.rawSceneUrl(ghRepo), { cache: 'no-store' }).catch(() => null)
         if (res?.ok) {
           doc = await res.json().catch(() => null)
         } else if (res) {
@@ -852,7 +887,7 @@ function App(): JSX.Element {
       if (h !== lastPushedHashRef.current) return // local edits landed meanwhile — push owns this tick
       const converted = convertElementsPreservingImageProps(up.map(cleanElementForExcalidraw))
       applySceneUpdateWithoutAutoSync(api, { elements: converted, captureUpdate: CaptureUpdateAction.NEVER })
-      if (doc.files) api.addFiles(Object.values(doc.files))
+      if (doc.files) applyFilesIfChanged(api, doc.files)
       lastUpstreamRef.current = upRaw
       baseElementsRef.current = up
       lastPushedHashRef.current = hashElements(api.getSceneElements().filter((el) => !el.isDeleted))
@@ -865,7 +900,11 @@ function App(): JSX.Element {
 
   useEffect(() => {
     if (serverMode) return
-    const id = setInterval(() => { void pushToGitHub(false); void pullFromGitHub() }, 20000)
+    // Anonymous Contents API quota is 60 req/hr/IP (vs 5000 with a token):
+    // a 20s tick alone burns 180/hr. Poll viewers at 90s (40/hr headroom for
+    // boot lookups); editors keep the 20s tick.
+    const intervalMs = ghToken ? 20000 : 90000
+    const id = setInterval(() => { void pushToGitHub(false); void pullFromGitHub() }, intervalMs)
     return () => {
       clearInterval(id)
     }
@@ -950,13 +989,19 @@ function App(): JSX.Element {
       // lets the close-flush survive page teardown. On close we send a
       // single PUT with the last-known sha (no prior GET): a multi-request
       // chain never completes before the page is torn down.
+      let pushError: string | null = null
       const res = await gh.pushScene(
         ghRepo, ghToken,
         { elements: localElements as any, files: files as any },
         { keepalive: isClosing, base: baseElementsRef.current, sha: ghShaRef.current },
-      ).catch(() => null)
+      ).catch((e) => { pushError = (e as Error)?.message || 'push failed'; return null })
       if (!res) {
-        if (!isClosing) setSyncStatus('error')
+        // Surface the reason in the pill — silently staying on "Unsaved
+        // changes" with no diagnosis is how the 422 outage went unnoticed.
+        if (!isClosing) {
+          setSyncStatus('error')
+          setSyncError(`save failed (${String(pushError || 'network').slice(0, 80)})`)
+        }
         return
       }
       ghShaRef.current = res.sha
@@ -977,6 +1022,7 @@ function App(): JSX.Element {
       lastUpstreamRef.current = JSON.stringify(res.elements)
       baseElementsRef.current = res.elements
       setGhDirty(false)
+      setSyncError(null)
       clearLocalSnapshot(snapshotKeyFor(ghRepoRef.current))
       if (!isClosing && ((res.conflicts?.length || 0) > 0 || (res.added || 0) + (res.updated || 0) > 0)) {
         showToast(res.conflicts?.length
@@ -997,7 +1043,10 @@ function App(): JSX.Element {
           setAccess(a)
         } catch { setAccess('viewer') }
       }
-      if (!isClosing) setSyncStatus('error')
+      if (!isClosing) {
+        setSyncStatus('error')
+        setSyncError(`save failed (${String((error as Error)?.message || 'network').slice(0, 80)})`)
+      }
     } finally {
       ghPushInFlightRef.current = false
       opSeqRef.current += 1
@@ -1096,7 +1145,7 @@ function App(): JSX.Element {
       const scene = await gh.loadStaticScene(ghRepo, ghToken)
       const converted = convertElementsPreservingImageProps((scene.elements || []).map(cleanElementForExcalidraw))
       const keptLocal = excalidrawAPI ? applyLoadedElements(converted) : false
-      if (scene.files) excalidrawAPI?.addFiles(Object.values(scene.files))
+      if (scene.files && excalidrawAPI) applyFilesIfChanged(excalidrawAPI, scene.files)
       // Seed the baseline so pre-load onChange noise never marks us dirty.
       if (excalidrawAPI) {
         lastPushedHashRef.current = hashElements(
