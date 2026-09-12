@@ -435,6 +435,17 @@ async function runTui(): Promise<void> {
   const priv = await isPrivateRepo(slug);
   if (priv !== null) clack.log.info(`Repo is ${priv ? 'private' : 'public'} — recommended host: ${priv ? 'Cloudflare Pages' : 'GitHub Pages'}.`);
 
+  // Visibility drift: repo flipped public<->private since last setup, so the
+  // stored target + viewer URL no longer match — nudge to re-pick below.
+  try {
+    const prevRaw = fs.readFileSync(path.join(findProjectRoot(process.cwd()), CONFIG_NAME), 'utf8');
+    const prevTarget = (JSON.parse(prevRaw) as { target?: string }).target;
+    const want = priv === true ? 'cloudflare' : 'pages';
+    if (prevTarget && prevTarget !== want && priv !== null) {
+      clack.log.warn(`Visibility changed since last setup (host: ${prevTarget}, repo now ${priv ? 'private' : 'public'}). Pick ${want} below to migrate — see README "Migrating public<->private".`);
+    }
+  } catch { /* first setup — nothing to compare */ }
+
   if (!ghAuthed() && !process.env.GITHUB_TOKEN) {
     const how = await clack.select({
       message: 'GitHub auth missing. How to log in?',
@@ -456,17 +467,21 @@ async function runTui(): Promise<void> {
     }
   }
 
-  const auto = await resolveTarget(slug);
+  // No auto option: GitHub Pages can't serve private repos on free plans
+  // and public repos need zero config, so visibility pre-selects the right
+  // host — the user just confirms or flips. Non-interactive `--target` still
+  // goes through resolveTarget() in cmdSetup.
+  const recommended: HostTarget = priv === true ? 'cloudflare' : 'pages';
   const hostAnswer = await clack.select({
-    message: `Where to host the viewer? (auto: ${auto})`,
+    message: 'Where to host the viewer?',
+    initialValue: recommended,
     options: [
-      { value: 'auto', label: `Auto — ${auto === 'pages' ? 'GitHub Pages (public repo)' : 'Cloudflare Pages (private repo)'}`, hint: 'recommended' },
-      { value: 'pages', label: 'GitHub Pages', hint: 'public repos, zero config' },
-      { value: 'cloudflare', label: 'Cloudflare Pages', hint: 'private repos' },
+      { value: 'pages', label: 'GitHub Pages (public repo)', hint: 'zero config' },
+      { value: 'cloudflare', label: 'Cloudflare Pages (private repo)', hint: 'needs wrangler login' },
     ],
   });
   if (clack.isCancel(hostAnswer)) { clack.cancel('Aborted.'); process.exit(0); }
-  const target = (hostAnswer === 'auto' ? auto : hostAnswer) as 'pages' | 'cloudflare';
+  const target = hostAnswer as HostTarget;
 
   const editorAnswer = await clack.multiselect({
     message: 'Install the MCP server into which editors?',

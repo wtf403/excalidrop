@@ -78,7 +78,7 @@ npx excalidrop setup owner/repo [--target pages|cloudflare]
 `setup` walks you through the whole flow on **any repo you own or can access**:
 
 1. **Checks `gh auth`** (log in with `gh auth login` first — 2FA via GitHub, or `npx excalidrop login` device flow).
-2. **Picks a host** (auto: public→GitHub Pages, private→Cloudflare Pages; override with `--target`). Publishes the viewer once — later saves never redeploy.
+2. **Picks a host** (recommended from visibility: public→GitHub Pages, private→Cloudflare Pages; override with `--target`). Publishes the viewer once — later saves never redeploy.
 3. Repo access == canvas access: collaborators with write can edit, readers get view-only, everyone else gets a login wall.
 4. Writes `.mcp.json` + remembers the repo in `.excalidrop.json`, so the MCP preloads it and subsequent sessions draw directly. Commits land on GitHub; the viewer updates itself.
 
@@ -90,6 +90,24 @@ codex mcp add excalidrop -- npx -y excalidrop@latest mcp --repo owner/repo
 ```
 
 Screenshots / viewport / mermaid need one viewer tab open (shared relay at `excalidrop.wtf403.workers.dev`); drawing works headless.
+
+### Migrating public↔private
+
+Flipping repo visibility doesn't move canvas data (it stays on the `excalidrop` branch) — only the viewer host changes. GitHub Pages serves private repos only on paid plans, so private repos use Cloudflare Pages. The TUI detects the flip (stored target in `.excalidrop.json` vs current visibility) and pre-selects the right host.
+
+**Public → private:**
+
+1. `gh repo edit owner/repo --visibility private` (or repo Settings).
+2. `npx excalidrop setup owner/repo --target cloudflare` (needs `wrangler login` once). New URL: `https://excalidrop-owner-repo.pages.dev/?repo=owner/repo`.
+3. Anonymous viewing ends: private scenes need a token, so every viewer must log in and the Excalidrop app must be installed on the repo.
+4. Add the new `https://<project>.pages.dev/` callback URL in your GitHub App / OAuth App settings (exact match).
+5. The old `owner.github.io/repo` URL 404s — optionally disable Pages (Settings → Pages) to avoid confusion.
+
+**Private → public:**
+
+1. `gh repo edit owner/repo --visibility public`.
+2. Either stay on Cloudflare (keeps working; anonymous reads start working once public) or move back to zero-config: `npx excalidrop setup owner/repo --target pages`.
+3. If you move back, optionally delete the Cloudflare project (`npx -y wrangler@4 pages project delete <project>`) so two live URLs don't drift.
 
 ## Configure MCP Clients
 
