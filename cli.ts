@@ -191,10 +191,22 @@ async function resolveTarget(repo: string, explicit?: string): Promise<HostTarge
   return (await isPrivateRepo(repo)) === true ? 'cloudflare' : 'pages';
 }
 
+const WRANGLER = ['-y', 'wrangler@4'];
+
+// Which Cloudflare identity would a Pages deploy use? whoami fails when
+// logged out; a CLOUDFLARE_API_TOKEN works without a login. Deploys always
+// run under the USER's own account/quota — never the author's.
+function wranglerAccount(): { ok: boolean; display: string } {
+  if (process.env.CLOUDFLARE_API_TOKEN) return { ok: true, display: 'API token (CLOUDFLARE_API_TOKEN)' };
+  const r = runCapture('npx', [...WRANGLER, 'whoami']);
+  if (r.status !== 0) return { ok: false, display: '' };
+  const m = r.out.match(/[\w.+-]+@[\w-]+\.[\w.]+/);
+  return { ok: true, display: m?.[0] ?? 'logged in' };
+}
+
 function deployToCloudflarePages(project: string): void {
   // wrangler 4 doesn't auto-create Pages projects and its Workers delegation
   // misfires on explicit asset dirs — create once, then deploy classic with --force.
-  const WRANGLER = ['-y', 'wrangler@4'];
   const create = spawnSync('npx', [...WRANGLER, 'pages', 'project', 'create', project, '--force', '--production-branch=main'], { stdio: 'pipe', encoding: 'utf8', env: process.env });
   const createOut = (create.stdout || '') + (create.stderr || '');
   if (create.status !== 0 && !/already exists/i.test(createOut)) {
@@ -211,6 +223,20 @@ function detectSlug(): string {
   } catch { return ''; }
 }
 
+/** Accept owner/repo, a GitHub URL, or git@ SSH — always returns owner/repo or ''. */
+export function normalizeRepoSlug(input: string): string {
+  const s = (input || '').trim();
+  if (!s) return '';
+  // Full URL / SSH / bare host path → extract the owner/repo tail.
+  const m = s.match(/github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?(?:\/.*)?$/i);
+  const candidate = m ? m[1]! : s;
+  const cleaned = candidate.replace(/\.git$/i, '').replace(/^\/+|\/+$/g, '');
+  const ok = cleaned.match(/^([a-z0-9_.-]+)\/([a-z0-9_.-]+)$/i);
+  return ok ? `${ok[1]!.toLowerCase()}/${ok[2]}` : '';
+}
+
+const SLUG_HINT = 'owner/repo or a GitHub link';
+
 function ghAuthed(): boolean {
   return spawnSync('gh', ['auth', 'status'], { stdio: 'ignore' }).status === 0;
 }
@@ -221,14 +247,15 @@ function commandExists(cmd: string): boolean {
 }
 
 function findProjectRoot(cwd: string): string {
-  let dir = path.resolve(cwd);
-  const home = process.env.HOME || process.env.USERPROFILE || '/';
-  while (true) {
-    if (fs.existsSync(path.join(dir, 'package.json')) || fs.existsSync(path.join(dir, '.git'))) return dir;
-    const parent = path.dirname(dir);
-    if (parent === dir || dir === home) return path.resolve(cwd);
-    dir = parent;
-  }
+  // Inside a git checkout the repo top is the root. Never walk up past cwd
+  // looking for package.json: from a fresh non-checkout dir (e.g. a folder
+  // holding a brand-new canvas repo) the old walk-up climbed into an
+  // unrelated parent project and wrote .mcp.json / .excalidrop.json there.
+  try {
+    const top = execSync('git rev-parse --show-toplevel', { cwd: path.resolve(cwd), encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    if (top) return top;
+  } catch { /* not inside a git work tree — fall through to cwd */ }
+  return path.resolve(cwd);
 }
 
 function mcpArgs(repo: string): string[] {
@@ -449,6 +476,50 @@ const EDITOR_LABELS: Record<EditorId, string> = {
   'opencode-user': 'OpenCode (user config)',
 };
 
+// Harnesses group the flat scope-specific ids for the two-step TUI picker:
+// step 1 picks harnesses, step 2 picks the scope per multi-scope harness.
+// Single-scope harnesses (codex, desktop) are user-global — no step 2.
+const HARNESSES = ['claude', 'codex', 'cursor', 'desktop', 'opencode'] as const;
+type Harness = (typeof HARNESSES)[number];
+
+const HARNESS_EDITORS: Record<Harness, EditorId[]> = {
+  claude: ['claude-user', 'claude-project'],
+  codex: ['codex'],
+  cursor: ['cursor-user', 'cursor'],
+  desktop: ['desktop'],
+  opencode: ['opencode-user', 'opencode'],
+};
+
+const HARNESS_LABELS: Record<Harness, string> = {
+  claude: 'Claude Code',
+  codex: 'Codex CLI',
+  cursor: 'Cursor',
+  desktop: 'Claude Desktop',
+  opencode: 'OpenCode',
+};
+
+// One-line install-state summary for the harness picker, e.g.
+// "user: installed, project: —" or "installed → other/repo".
+function harnessSummary(h: Harness, slug: string, root: string): string {
+  const ids = HARNESS_EDITORS[h];
+  const parts = ids.map((id) => {
+    const st = detectEditorState(id, slug, root);
+    const cur = st.status === 'current' ? 'installed' : st.status === 'stale' ? `installed → ${st.repo ?? 'unknown'}` : '—';
+    return ids.length > 1 ? `${editorScope(id)}: ${cur}` : cur;
+  });
+  return parts.join(', ');
+}
+
+// Scope option for step 2 of the picker: short scope label + live state hint.
+function scopeOption(id: EditorId, slug: string, root: string): { value: string; label: string; hint?: string } {
+  const st = detectEditorState(id, slug, root);
+  return {
+    value: id,
+    label: editorTarget(id, root),
+    hint: st.status === 'current' ? 'installed' : st.status === 'stale' ? `installed → ${st.repo ?? 'unknown'}` : undefined,
+  };
+}
+
 // One honest report for every editor install attempt — always shows the
 // command/config that was (or should be) applied, so "installed" can never
 // mean "already existed but points elsewhere".
@@ -497,10 +568,11 @@ function parseEditorsFlag(args: string[]): EditorId[] | null {
 }
 
 async function cmdSetup(args: string[], editorOverride?: EditorId[], opts: { fromTui?: boolean } = {}): Promise<{ repo: string; viewerUrl: string; live: boolean; installs: InstallResult[] }> {
-  const positional = args.find((a) => !a.startsWith('-') && a.includes('/'));
-  const slug = parseFlag(args, 'repo') || positional || detectSlug();
-  if (!slug || !/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(slug)) {
-    console.error('Usage: npx excalidrop setup owner/repo [--target pages|cloudflare] [--editor claude-project,codex] [--no-prompt]');
+  const positional = args.find((a) => !a.startsWith('-') && (a.includes('/') || a.includes('github.com')));
+  const rawSlug = parseFlag(args, 'repo') || positional || detectSlug();
+  const slug = normalizeRepoSlug(rawSlug);
+  if (!slug) {
+    console.error(`Usage: npx excalidrop setup ${SLUG_HINT} [--target pages|cloudflare] [--editor claude-project,codex] [--no-prompt]`);
     process.exit(1);
   }
   if (!ghAuthed() && !process.env.GITHUB_TOKEN) {
@@ -532,6 +604,13 @@ async function cmdSetup(args: string[], editorOverride?: EditorId[], opts: { fro
     await deployViewerPages(slug);
     viewerUrl = viewerUrlFor(slug, 'pages');
   } else {
+    // Fail fast on missing auth instead of dying mid-deploy. The TUI checks
+    // interactively before the spinner; non-interactive runs land here.
+    const acct = wranglerAccount();
+    if (!acct.ok && !opts.fromTui) {
+      throw new Error('Not logged into Cloudflare (wrangler whoami failed). Run `npx -y wrangler@4 login` first, or set CLOUDFLARE_API_TOKEN.');
+    }
+    console.log(`Cloudflare account: ${acct.display || 'unknown'} — the viewer deploys to YOUR account and quota.`);
     deployToCloudflarePages(projectNameForRepo(slug));
     viewerUrl = viewerUrlFor(slug, 'cloudflare');
   }
@@ -646,12 +725,12 @@ async function runTui(): Promise<void> {
   const detected = detectSlug();
   const repoAnswer = await clack.text({
     message: 'Which repo holds the canvas?',
-    placeholder: detected || 'owner/repo',
+    placeholder: detected || SLUG_HINT,
     initialValue: detected || '',
-    validate: (v) => (/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(v.trim()) ? undefined : 'Use owner/repo'),
+    validate: (v) => (normalizeRepoSlug(v) ? undefined : `Use ${SLUG_HINT}`),
   });
   if (clack.isCancel(repoAnswer)) { clack.cancel('Aborted.'); process.exit(0); }
-  const slug = (repoAnswer as string).trim().toLowerCase();
+  const slug = normalizeRepoSlug(repoAnswer as string);
   const priv = await isPrivateRepo(slug);
   if (priv !== null) clack.log.info(`Repo is ${priv ? 'private' : 'public'} — recommended host: ${priv ? 'Cloudflare Pages' : 'GitHub Pages'}.`);
 
@@ -703,19 +782,84 @@ async function runTui(): Promise<void> {
   if (clack.isCancel(hostAnswer)) { clack.cancel('Aborted.'); process.exit(0); }
   const target = hostAnswer as HostTarget;
 
+  // Cloudflare deploys run under the USER's own wrangler identity and quota.
+  // Verify login up front (with an offer to log in now) instead of failing
+  // minutes later mid-deploy.
+  if (target === 'cloudflare') {
+    let acct = wranglerAccount();
+    if (!acct.ok) {
+      const login = await clack.confirm({
+        message: 'Wrangler is not logged into Cloudflare. Log in now (opens a browser)?',
+      });
+      if (clack.isCancel(login)) { clack.cancel('Aborted.'); process.exit(0); }
+      if (login) {
+        spawnSync('npx', [...WRANGLER, 'login'], { stdio: 'inherit', env: process.env });
+        acct = wranglerAccount();
+      }
+      if (!acct.ok) {
+        clack.log.error('Cloudflare login is required for Cloudflare Pages hosting — pick GitHub Pages, or run `npx -y wrangler@4 login` first.');
+        process.exit(1);
+      }
+    }
+    clack.log.info(`Cloudflare account: ${acct.display} — the viewer deploys to YOUR account and quota.`);
+  }
+
   const projectRoot = findProjectRoot(process.cwd());
-  const editorAnswer = await clack.multiselect({
-    message: 'Install the MCP server into which editors? (already-current entries are skipped)',
-    options: (Object.keys(EDITOR_LABELS) as EditorId[]).map((id) => {
-      const st = detectEditorState(id, slug, projectRoot);
-      const mark = st.status === 'current' ? ' [already installed]' : st.status === 'stale' ? ` [now → ${st.repo ?? 'unknown'}]` : '';
-      return { value: id, label: `${EDITOR_LABELS[id]}${mark}` };
-    }),
-    initialValues: ['claude-project', 'codex'] as EditorId[],
+  // Step 1: pick harnesses. Preselect ones already wired to this repo;
+  // fall back to the historical default when nothing is installed yet.
+  const detectedHarnesses = (HARNESSES as readonly Harness[]).filter((h) =>
+    HARNESS_EDITORS[h].some((id) => detectEditorState(id, slug, projectRoot).status === 'current'),
+  );
+  const harnessAnswer = await clack.multiselect({
+    message: 'Install the MCP server into which editors?',
+    options: (HARNESSES as readonly Harness[]).map((h) => ({
+      value: h,
+      label: `${HARNESS_LABELS[h]} (${harnessSummary(h, slug, projectRoot)})`,
+    })),
+    initialValues: detectedHarnesses.length > 0 ? detectedHarnesses : (['claude', 'codex'] as Harness[]),
     required: false,
   });
-  if (clack.isCancel(editorAnswer)) { clack.cancel('Aborted.'); process.exit(0); }
-  const editors = editorAnswer as EditorId[];
+  if (clack.isCancel(harnessAnswer)) { clack.cancel('Aborted.'); process.exit(0); }
+  const harnesses = harnessAnswer as Harness[];
+
+  // Step 2: per multi-scope harness, pick where to install.
+  const editors: EditorId[] = [];
+  for (const h of harnesses) {
+    const ids = HARNESS_EDITORS[h];
+    if (ids.length === 1) {
+      editors.push(ids[0]!);
+      continue;
+    }
+    const current = ids.filter((id) => detectEditorState(id, slug, projectRoot).status === 'current');
+    const scopeAnswer = await clack.select({
+      message: `Where to install for ${HARNESS_LABELS[h]}?`,
+      initialValue: current.length === 1 ? current[0] : ids[0],
+      options: [
+        ...ids.map((id) => scopeOption(id, slug, projectRoot)),
+        { value: '__both__', label: 'Both scopes' },
+      ],
+    });
+    if (clack.isCancel(scopeAnswer)) { clack.cancel('Aborted.'); process.exit(0); }
+    if (scopeAnswer === '__both__') editors.push(...ids);
+    else editors.push(scopeAnswer as EditorId);
+  }
+
+  // Stale Claude entries can't be overwritten by `add` (it exits 0 with
+  // "already exists" and changes nothing) — offer an explicit repoint before
+  // the deploy phase so the install below actually lands.
+  for (const id of editors) {
+    if (id !== 'claude-user' && id !== 'claude-project') continue;
+    const st = detectEditorState(id, slug, projectRoot);
+    if (st.status !== 'stale') continue;
+    const ok = await clack.confirm({
+      message: `${EDITOR_LABELS[id]} points at ${st.repo ?? 'unknown'} — repoint to ${slug}?`,
+    });
+    if (clack.isCancel(ok)) { clack.cancel('Aborted.'); process.exit(0); }
+    if (ok) {
+      const scope = id === 'claude-project' ? 'project' : 'user';
+      runCapture('claude', ['mcp', 'remove', 'excalidrop', '-s', scope]);
+    }
+  }
 
   const s = clack.spinner();
   s.start('Publishing viewer + wiring MCP…');
@@ -784,11 +928,12 @@ async function main(): Promise<void> {
     case 'add': {
       const root = findProjectRoot(process.cwd());
       const ids = parseEditorsFlag(rest) || [...EDITOR_IDS];
-      const repo = rest.find((a) => a.includes('/')) || detectSlug() || 'owner/repo';
+      const raw = rest.find((a) => a.includes('/') || a.includes('github.com')) || detectSlug() || 'owner/repo';
+      const repo = normalizeRepoSlug(raw) || raw;
       console.log('Add excalidrop to your AI agent (no install, always latest):\n');
       for (const id of ids) {
         const st = repo.includes('/') ? detectEditorState(id, repo, root) : null;
-        const mark = st?.status === 'current' ? ' [already installed]' : st?.status === 'stale' ? ` [now → ${st.repo ?? 'unknown'}]` : '';
+        const mark = st?.status === 'current' ? ' (installed)' : st?.status === 'stale' ? ` (installed → ${st.repo ?? 'unknown'})` : '';
         console.log(`## ${EDITOR_LABELS[id]} → ${editorTarget(id, root)}${mark}\n${editorCommand(id, repo)}\n`);
       }
       break;
