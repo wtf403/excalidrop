@@ -29,7 +29,7 @@
       "versionNonce": 1301359707,
       "isDeleted": false,
       "boundElements": null,
-      "updated": 1789172431181,
+      "updated": 1789172652384,
       "link": null,
       "locked": false
     },
@@ -149,8 +149,8 @@
       "type": "arrow",
       "x": 872.234025117201,
       "y": 824.4667290964162,
-      "width": 247.17063902183065,
-      "height": 160.47826069673897,
+      "width": 246.67063902183065,
+      "height": 159.97826069673897,
       "angle": 0,
       "strokeColor": "#1e1e1e",
       "backgroundColor": "transparent",
@@ -170,7 +170,7 @@
       "versionNonce": 269771816,
       "isDeleted": false,
       "boundElements": null,
-      "updated": 1789172431181,
+      "updated": 1789172652384,
       "link": null,
       "locked": false,
       "points": [
@@ -179,8 +179,8 @@
           -0.5
         ],
         [
-          -247.17063902183065,
-          -160.47826069673897
+          -246.67063902183065,
+          -159.97826069673897
         ]
       ],
       "lastCommittedPoint": null,
@@ -216,7 +216,7 @@
       "versionNonce": 1324787420,
       "isDeleted": false,
       "boundElements": null,
-      "updated": 1789172431181,
+      "updated": 1789172652384,
       "link": null,
       "locked": false
     },
@@ -359,6 +359,41 @@
       ],
       "crop": null,
       "version": 1
+    },
+    {
+      "id": "d2j9eGdl5SMGEfbRk5Uc9",
+      "type": "image",
+      "x": 163,
+      "y": 390,
+      "width": 64,
+      "height": 64,
+      "angle": 0,
+      "strokeColor": "transparent",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "opacity": 100,
+      "groupIds": [],
+      "frameId": null,
+      "index": "aT",
+      "roundness": null,
+      "seed": 879070003,
+      "version": 5,
+      "versionNonce": 1691800595,
+      "isDeleted": false,
+      "boundElements": null,
+      "updated": 1789172663020,
+      "link": null,
+      "locked": false,
+      "status": "pending",
+      "fileId": "795dcc812d96eb894f91d57df3b42a5935f6b29e",
+      "scale": [
+        1,
+        1
+      ],
+      "crop": null
     }
   ],
   "files": {
