@@ -68,10 +68,13 @@
         }
 
         /* Save/status block when docked in Excalidraw's own <Footer/>
-           (bottom-left bar): static flow instead of the floating overlay. */
+           (bottom-left bar): static flow instead of the floating overlay.
+           footer-center is a zero-gap flex row, so the pill needs its own
+           left margin to sit clear of the undo/redo island. */
         .excalidraw .pill {
             position: static;
             z-index: auto;
+            margin-left: 0.5rem;
         }
 
         /* Flat look for Excalidraw chrome around the pill. */
