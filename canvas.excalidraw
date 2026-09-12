@@ -29,7 +29,7 @@
       "versionNonce": 392450555,
       "isDeleted": false,
       "boundElements": null,
-      "updated": 1789250081951,
+      "updated": 1789250412023,
       "link": null,
       "locked": false
     },
@@ -108,13 +108,13 @@
       "opacity": 100,
       "groupIds": [],
       "frameId": null,
-      "index": "a8",
+      "index": "aA",
       "roundness": null,
       "seed": 1471041511,
-      "versionNonce": 2100376929,
+      "versionNonce": 785875194,
       "isDeleted": false,
       "boundElements": null,
-      "updated": 1789212358067,
+      "updated": 1789250412023,
       "link": null,
       "locked": false,
       "status": "pending",
@@ -124,37 +124,7 @@
         1
       ],
       "crop": null,
-      "version": 1
-    },
-    {
-      "id": "bXDQiuRSRjJGpX00fOY8_",
-      "type": "embeddable",
-      "x": 707.304128498984,
-      "y": -92.8091085909021,
-      "width": 1159.7376081112861,
-      "height": 705.4377350736941,
-      "angle": 0,
-      "strokeColor": "transparent",
-      "backgroundColor": "transparent",
-      "fillStyle": "solid",
-      "strokeWidth": 2,
-      "strokeStyle": "solid",
-      "roughness": 1,
-      "opacity": 100,
-      "groupIds": [],
-      "frameId": null,
-      "index": "a9",
-      "roundness": {
-        "type": 3
-      },
-      "seed": 451696902,
-      "version": 175,
-      "versionNonce": 982800774,
-      "isDeleted": false,
-      "boundElements": null,
-      "updated": 1789250151188,
-      "link": "https://www.youtube.com/watch?v=HDio3J9wkjo",
-      "locked": false
+      "version": 2
     }
   ],
   "files": {
