@@ -166,14 +166,25 @@ function projectNameForRepo(repo: string): string {
   return `excalidrop-${repo.replace('/', '-').toLowerCase().replace(/[^a-z0-9-]/g, '-')}`.slice(0, 60);
 }
 
-function viewerUrlFor(repo: string, target: HostTarget): string {
+function viewerUrlFor(repo: string, target: HostTarget, project?: string): string {
   if (target === 'cloudflare') {
     // Generic viewer build can't infer the repo from a pages.dev host —
     // detectRepo() reads it from ?repo= instead.
-    return `https://${projectNameForRepo(repo)}.pages.dev/?repo=${repo}`;
+    return `https://${project || projectNameForRepo(repo)}.pages.dev/?repo=${repo}`;
   }
   const [owner, name] = repo.split('/');
   return `https://${owner}.github.io/${name}/`;
+}
+
+/** Cloudflare project names: lowercase alphanumerics + hyphens, ≤63 chars. */
+export function normalizeProjectName(input: string, fallback: string): string {
+  const cleaned = (input || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 63);
+  return cleaned || fallback;
 }
 
 async function isPrivateRepo(repo: string): Promise<boolean | null> {
@@ -567,7 +578,7 @@ function parseEditorsFlag(args: string[]): EditorId[] | null {
   return valid;
 }
 
-async function cmdSetup(args: string[], editorOverride?: EditorId[], opts: { fromTui?: boolean } = {}): Promise<{ repo: string; viewerUrl: string; live: boolean; installs: InstallResult[] }> {
+async function cmdSetup(args: string[], editorOverride?: EditorId[], opts: { fromTui?: boolean; project?: string } = {}): Promise<{ repo: string; viewerUrl: string; live: boolean; installs: InstallResult[] }> {
   const positional = args.find((a) => !a.startsWith('-') && (a.includes('/') || a.includes('github.com')));
   const rawSlug = parseFlag(args, 'repo') || positional || detectSlug();
   const slug = normalizeRepoSlug(rawSlug);
@@ -611,8 +622,17 @@ async function cmdSetup(args: string[], editorOverride?: EditorId[], opts: { fro
       throw new Error('Not logged into Cloudflare (wrangler whoami failed). Run `npx -y wrangler@4 login` first, or set CLOUDFLARE_API_TOKEN.');
     }
     console.log(`Cloudflare account: ${acct.display || 'unknown'} — the viewer deploys to YOUR account and quota.`);
-    deployToCloudflarePages(projectNameForRepo(slug));
-    viewerUrl = viewerUrlFor(slug, 'cloudflare');
+    // TUI asks for this (prompt below); --project-name sets it headless.
+    // NOTE: renaming the project changes the viewer URL, so a previously
+    // registered OAuth callback URL stops matching — re-register login (see
+    // README "Browser login") after a rename.
+    const project = normalizeProjectName(
+      parseFlag(args, 'project-name') || (opts as { project?: string }).project || '',
+      projectNameForRepo(slug),
+    );
+    console.log(`Cloudflare project: ${project} (viewer host ${project}.pages.dev)`);
+    deployToCloudflarePages(project);
+    viewerUrl = viewerUrlFor(slug, 'cloudflare', project);
   }
 
   // Don't declare victory until the viewer actually serves — first Pages /
@@ -782,6 +802,20 @@ async function runTui(): Promise<void> {
   if (clack.isCancel(hostAnswer)) { clack.cancel('Aborted.'); process.exit(0); }
   const target = hostAnswer as HostTarget;
 
+  // Cloudflare project name = the *.pages.dev subdomain. Offer the choice
+  // up front so the URL is predictable (and re-runnable without surprises).
+  let project = projectNameForRepo(slug);
+  if (target === 'cloudflare') {
+    const nameAnswer = await clack.text({
+      message: 'Cloudflare project name (viewer host)?',
+      placeholder: project,
+      initialValue: project,
+      validate: (v) => (normalizeProjectName(v, '') ? undefined : 'Lowercase letters, numbers, hyphens.'),
+    });
+    if (clack.isCancel(nameAnswer)) { clack.cancel('Aborted.'); process.exit(0); }
+    project = normalizeProjectName(nameAnswer as string, project);
+  }
+
   // Cloudflare deploys run under the USER's own wrangler identity and quota.
   // Verify login up front (with an offer to log in now) instead of failing
   // minutes later mid-deploy.
@@ -816,7 +850,7 @@ async function runTui(): Promise<void> {
       value: h,
       label: `${HARNESS_LABELS[h]} (${harnessSummary(h, slug, projectRoot)})`,
     })),
-    initialValues: detectedHarnesses.length > 0 ? detectedHarnesses : (['claude', 'codex'] as Harness[]),
+    initialValues: detectedHarnesses.length > 0 ? detectedHarnesses : (['claude'] as Harness[]),
     required: false,
   });
   if (clack.isCancel(harnessAnswer)) { clack.cancel('Aborted.'); process.exit(0); }
@@ -867,7 +901,7 @@ async function runTui(): Promise<void> {
   let live = false;
   let installs: InstallResult[] = [];
   try {
-    ({ viewerUrl, live, installs } = await cmdSetup(['--no-prompt', slug, `--target=${target}`], editors, { fromTui: true }));
+    ({ viewerUrl, live, installs } = await cmdSetup(['--no-prompt', slug, `--target=${target}`], editors, { fromTui: true, project }));
     s.stop('Setup complete.');
   } catch (e) {
     s.stop('Setup failed: ' + (e as Error).message);
