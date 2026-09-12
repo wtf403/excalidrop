@@ -8,4 +8,13 @@ compatibility_date = "2024-01-01"
 GITHUB_CLIENT_ID = "Iv23liuS2fx3QOEIoDmx"
 # Comma-separated allowed canvas origins: exact ("https://wtf403.github.io")
 # or "*.github.io"-style suffixes so one deployment serves every publisher.
-ALLOWED_REDIRECT_ORIGINS = "*.github.io"
+# Add "*.pages.dev" + your custom domain when hosting private viewers on Cloudflare.
+ALLOWED_REDIRECT_ORIGINS = "*.github.io,*.pages.dev"
+
+[[durable_objects.bindings]]
+name = "RELAY"
+class_name = "RelayRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RelayRoom"]

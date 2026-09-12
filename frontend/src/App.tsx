@@ -324,6 +324,22 @@ function App(): JSX.Element {
     const handle = registerCanvasWebMCP(() => excalidrawAPIRef.current)
     return () => handle.cleanup()
   }, [excalidrawAPI])
+  // Lets the remote MCP screenshot / drive the viewport through this tab.
+  useEffect(() => {
+    if (!excalidrawAPI) return
+    let handles: Array<{ cleanup: () => void }> = []
+    ;(async () => {
+      try {
+        const { connectRelay, startCommandQueue } = await import('./utils/relay')
+        const { detectRepo } = await import('./utils/ghSync')
+        const getApi = () => excalidrawAPIRef.current as any
+        const getToken = () => localStorage.getItem('excalidrop_gh_token') || localStorage.getItem('excalidrop_token')
+        const getRepo = () => detectRepo()
+        handles = [connectRelay(getApi, getToken, getRepo), startCommandQueue(getApi, getToken, getRepo)]
+      } catch { /* relay is best-effort */ }
+    })()
+    return () => { handles.forEach((h) => { try { h.cleanup() } catch {} }) }
+  }, [excalidrawAPI])
   // excalidraw.com-style `#addLibrary=<url>` deep links: fetch the
   // .excalidrawlib and merge it into the built-in library (run once).
   const libraryImportRef = useRef(false)

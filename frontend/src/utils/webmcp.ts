@@ -251,6 +251,51 @@ export function registerCanvasWebMCP(getApi: CanvasApiGetter): WebMCPHandle {
     },
   });
 
+  safeRegister({
+    name: 'take_screenshot',
+    title: 'Screenshot canvas',
+    description: 'Render the live canvas to a PNG dataURL (viewer-side, no server).',
+    inputSchema: { type: 'object', properties: { background: { type: 'boolean' } }, additionalProperties: false },
+    annotations: { readOnlyHint: true },
+    execute: async () => {
+      const { exportToBlob } = await import('@excalidraw/excalidraw');
+      const api = requireApi() as any;
+      const elements = api.getSceneElements();
+      const files = api.getFiles?.() || {};
+      const appState = api.getAppState?.() || {};
+      const blob = await exportToBlob({ elements, mimeType: 'image/png', quality: 0.9, appState, files });
+      const dataUrl: string = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(String(r.result));
+        r.onerror = () => rej(r.error);
+        r.readAsDataURL(blob);
+      });
+      return { ok: true, dataUrl };
+    },
+  });
+
+  safeRegister({
+    name: 'set_viewport',
+    title: 'Set viewport',
+    description: 'Zoom-to-fit or center on an element on the live canvas.',
+    inputSchema: {
+      type: 'object',
+      properties: { scrollToContent: { type: 'boolean' }, scrollToElementId: { type: 'string' }, zoom: { type: 'number' } },
+      additionalProperties: false,
+    },
+    execute: (args: { scrollToContent?: boolean; scrollToElementId?: string; zoom?: number }) => {
+      const api = requireApi() as any;
+      if (args?.scrollToElementId) {
+        const el = api.getSceneElements().find((e: any) => e['id'] === args.scrollToElementId);
+        if (!el) throw new Error(`Element ${args.scrollToElementId} not found`);
+        api.scrollToContent([el], { fitToViewport: false, animate: false });
+      } else {
+        api.scrollToContent(api.getSceneElements(), { fitToViewport: true, animate: false });
+      }
+      return { ok: true };
+    },
+  });
+
   return {
     available: true,
     count,

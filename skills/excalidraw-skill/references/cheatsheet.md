@@ -2,10 +2,12 @@
 
 ## Defaults
 
-- Canvas base URL: `EXPRESS_SERVER_URL` (default `http://127.0.0.1:3000`)
-- Canvas health: `GET /health`
+- Canvas repo: `--repo owner/repo` (or `EXCALIDROP_REPO` env, git remote, `.excalidrop.json`)
+- Auth: `GITHUB_TOKEN` → `gh auth token` → `~/.config/excalidrop/gh_token`
+- Scene: `canvas.excalidraw` on the repo's `excalidrop` branch; snapshots in `snapshots/<name>.json`
+- Screenshots/viewport need one viewer tab open (relay); drawing works headless
 
-## MCP Tools (26 total)
+## MCP Tools (31 total, remote-only)
 
 ### Element CRUD
 
@@ -75,68 +77,33 @@
 
 Notes:
 - **MCP tools**: Set `text` field on shapes to label them (auto-converts to `label.text`). Use `startElementId`/`endElementId` on arrows.
-- **REST API**: Use `"label": {"text": "..."}` for shape labels. Use `"start": {"id": "..."}` / `"end": {"id": "..."}` for arrow binding. (Different format from MCP!)
+- **Skill scripts**: Same `text` / `startElementId` conventions as MCP (they write straight to `canvas.excalidraw`).
 - `fontFamily` must be a string (e.g. `"1"`) or omit it entirely — do NOT pass a number.
 - `points` accepts both `[[x,y]]` tuples and `[{x,y}]` objects.
 - **Curved arrows**: Use `"roundness": {"type": 2}` with 3+ points for smooth curves. Use `"elbowed": true` for right-angle routing.
 - Prefer creating shapes first, then arrows, then alignment/grouping.
+- `get_canvas_screenshot` / `export_to_image` / `set_viewport` / `create_from_mermaid` need one viewer tab open (relay at `EXCALIDROP_RELAY_URL`, or GitHub `commands/` queue with `--no-relay`).
 
-## Canvas REST API (HTTP)
+## GitHub Scene Layout (remote canvas)
 
-### Elements
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/elements` | List all elements |
-| `GET` | `/api/elements/:id` | Get element by ID |
-| `POST` | `/api/elements` | Create element |
-| `PUT` | `/api/elements/:id` | Update element |
-| `DELETE` | `/api/elements/:id` | Delete element |
-| `DELETE` | `/api/elements/clear` | Clear all elements |
-| `GET` | `/api/elements/search?type=...` | Search with filters |
-| `POST` | `/api/elements/batch` | Batch create |
-| `POST` | `/api/elements/sync` | Overwrite import (clear + write) |
-| `POST` | `/api/elements/from-mermaid` | Mermaid conversion via frontend |
-
-### Export
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/export/image` | Request image export (needs frontend) |
-| `POST` | `/api/export/image/result` | Frontend posts export result back |
-
-### Viewport
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/viewport` | Set viewport/camera (needs frontend) |
-| `POST` | `/api/viewport/result` | Frontend posts viewport result back |
-
-### Snapshots
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/snapshots` | Save snapshot `{name}` |
-| `GET` | `/api/snapshots` | List snapshots |
-| `GET` | `/api/snapshots/:name` | Get snapshot by name |
-
-### System
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/health` | Health check |
-| `GET` | `/api/sync/status` | Memory/WebSocket stats |
+| Path (branch `excalidrop`) | Description |
+|--------|-------------|
+| `canvas.excalidraw` | Scene: `{ type, version, elements[], files? }` |
+| `snapshots/<name>.json` | Named snapshots (`snapshot_scene` / `restore_snapshot`) |
+| `commands/<reqId>.json` | Queued viewer commands (no-relay fallback) |
+| `results/<reqId>.json` | Viewer command results |
+| `assets/<fileId>.<ext>` | Image binaries |
 
 ## Skill Scripts
 
-All scripts accept `--url <canvasUrl>` (defaults to `EXPRESS_SERVER_URL`).
+All scripts take `--repo owner/repo` (or infer from git remote) and use `gh` auth.
 
 ```bash
-node scripts/healthcheck.cjs
-node scripts/clear-canvas.cjs
-node scripts/export-elements.cjs --out diagram.elements.json
-node scripts/import-elements.cjs --in diagram.elements.json --mode batch|sync
-node scripts/create-element.cjs --data '{...}'
-node scripts/update-element.cjs --id <id> --data '{...}'
-node scripts/delete-element.cjs --id <id>
+node scripts/healthcheck.cjs --repo owner/repo
+node scripts/clear-canvas.cjs --repo owner/repo
+node scripts/export-elements.cjs --repo owner/repo --out diagram.elements.json
+node scripts/import-elements.cjs --repo owner/repo --in diagram.elements.json --mode merge|replace
+node scripts/create-element.cjs --repo owner/repo --data '{...}'
+node scripts/update-element.cjs --repo owner/repo --id <id> --data '{...}'
+node scripts/delete-element.cjs --repo owner/repo --id <id>
 ```

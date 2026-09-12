@@ -38,10 +38,10 @@ Keywords: Excalidraw agent skill, Excalidraw MCP server, AI diagramming, Claude 
 
 ## What It Is
 
-This repo contains two separate processes:
+Remote-only: GitHub is the canvas. No local server, no ports.
 
-- Canvas server: web UI + REST API + WebSocket updates (default `http://127.0.0.1:3000`)
-- MCP server: exposes MCP tools over stdio; syncs to the canvas via `EXPRESS_SERVER_URL`
+- Viewer: static Excalidraw app on GitHub Pages (public repos) or Cloudflare Pages (private repos), reads `canvas.excalidraw` from the `excalidrop` branch
+- MCP server: remote-only stdio (`npx -y excalidrop@latest mcp --repo owner/repo`); draws via GitHub Contents API, screenshots via shared relay when a viewer tab is open
 
 ## How We Differ from the Official Excalidraw MCP
 
@@ -70,60 +70,39 @@ Excalidraw now has an [official MCP](https://github.com/excalidraw/excalidraw-mc
 ## Quick Start
 
 ```bash
-npm i -D excalidrop
-npx excalidrop setup  # gh auth check → publishes viewer to excalidrop → app-install link → verifies live
+npx excalidrop              # interactive TUI: repo → auth → host → editor
+# or one-shot:
+npx excalidrop setup owner/repo [--target pages|cloudflare]
 ```
 
 `setup` walks you through the whole flow on **any repo you own or can access**:
 
-1. **Checks `gh auth`** (log in with `gh auth login` first — 2FA via GitHub).
-2. **Publishes an empty canvas** to your repo's `excalidrop` branch and enables Pages (Actions deploy, once — later saves never redeploy).
-3. **Prints the one-time app-install link** (`github.com/apps/<app>/installations/new`) — installing the GitHub App on the repo is what grants canvas access. Repo access == canvas access: collaborators with write can edit, readers get view-only, everyone else gets a login wall.
-4. **Verifies** the viewer + scene are actually serving.
-5. Prints your canvas URL. In your agent, run `switch_remote { target: "<that URL>" }` once — it's remembered per-project in `.excalidrop.json`, so subsequent sessions skip it and draw directly. Commits land on GitHub; the viewer updates itself. Human edits in the browser autosync every 10s with a force-save on close.
+1. **Checks `gh auth`** (log in with `gh auth login` first — 2FA via GitHub, or `npx excalidrop login` device flow).
+2. **Picks a host** (auto: public→GitHub Pages, private→Cloudflare Pages; override with `--target`). Publishes the viewer once — later saves never redeploy.
+3. Repo access == canvas access: collaborators with write can edit, readers get view-only, everyone else gets a login wall.
+4. Writes `.mcp.json` + remembers the repo in `.excalidrop.json`, so the MCP preloads it and subsequent sessions draw directly. Commits land on GitHub; the viewer updates itself.
 
-Prefer local-only? `npx excalidrop init` (free port + agent install prompt) then `npx excalidrop up`.
-
-Each project gets its own port (scanned free from 3030), so several checkouts run concurrently. Agent config needs no hardcoded port — same pattern as `chrome-devtools-mcp`:
+No install needed — editors run the MCP straight from npm:
 
 ```bash
-claude mcp add excalidrop --scope project -- npx -y excalidrop mcp
-codex mcp add excalidrop -- npx -y excalidrop mcp
+claude mcp add excalidrop --scope project -- npx -y excalidrop@latest mcp --repo owner/repo
+codex mcp add excalidrop -- npx -y excalidrop@latest mcp --repo owner/repo
 ```
 
-## Quick Start (Local)
-
-Prereqs: Node >= 18, npm
-
-```bash
-npm ci
-npm run build
-```
-
-Terminal 1: start the canvas
-```bash
-PORT=3000 npm run canvas
-```
-
-> **Security note:** The server defaults to binding on `127.0.0.1` only. If you need to expose it on a network interface (e.g. Docker, remote access), set `HOST=0.0.0.0` — but ensure you have network-level access controls in place, as the API has no built-in authentication.
-
-Open `http://127.0.0.1:3000`.
-
-Terminal 2: run the MCP server (stdio)
-```bash
-EXPRESS_SERVER_URL=http://127.0.0.1:3000 node dist/index.js
-```
+Screenshots / viewport / mermaid need one viewer tab open (shared relay at `excalidrop.wtf403.workers.dev`); drawing works headless.
 
 ## Configure MCP Clients
 
-The MCP server runs over stdio and can be configured with any MCP-compatible client. The recommended path is `npm i -D excalidrop && npx excalidrop init` (per-project canvas + generated `.mcp.json`), which replaces the manual setups below.
+The MCP server runs over stdio (remote-only) and can be configured with any MCP-compatible client. The recommended path is `npx excalidrop setup owner/repo` (writes `.mcp.json` + auto-installs), which replaces the manual setups below.
 
 ### Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `EXPRESS_SERVER_URL` | URL of the canvas server | `http://127.0.0.1:3000` |
-| `ENABLE_CANVAS_SYNC` | Enable real-time canvas sync | `true` |
+| `EXCALIDROP_REPO` | Repo canvas (`owner/repo`), alternative to `--repo=` | git remote / `.excalidrop.json` |
+| `GITHUB_TOKEN` | GitHub token (else `gh auth token` / stored device token) | — |
+| `EXCALIDROP_RELAY_URL` | Screenshot/viewport relay | `https://excalidrop.wtf403.workers.dev` |
+| `EXCALIDROP_NO_RELAY` | Set `1` to use GitHub command-queue instead of relay | unset |
 
 ---
 
@@ -134,17 +113,12 @@ Config location:
 - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 - Linux: `~/.config/Claude/claude_desktop_config.json`
 
-**Local (node)**
 ```json
 {
   "mcpServers": {
-    "excalidraw": {
-      "command": "node",
-      "args": ["/absolute/path/to/mcp_excalidraw/dist/index.js"],
-      "env": {
-        "EXPRESS_SERVER_URL": "http://127.0.0.1:3000",
-        "ENABLE_CANVAS_SYNC": "true"
-      }
+    "excalidrop": {
+      "command": "npx",
+      "args": ["-y", "excalidrop@latest", "mcp", "--repo", "owner/repo"]
     }
   }
 }
@@ -154,28 +128,17 @@ Config location:
 
 ### Claude Code
 
-Use the `claude mcp add` command to register the MCP server.
-
-**Local (node)** - User-level (available across all projects):
 ```bash
-claude mcp add excalidraw --scope user \
-  -e EXPRESS_SERVER_URL=http://127.0.0.1:3000 \
-  -e ENABLE_CANVAS_SYNC=true \
-  -- node /absolute/path/to/mcp_excalidraw/dist/index.js
-```
-
-**Local (node)** - Project-level (shared via `.mcp.json`):
-```bash
-claude mcp add excalidraw --scope project \
-  -e EXPRESS_SERVER_URL=http://127.0.0.1:3000 \
-  -e ENABLE_CANVAS_SYNC=true \
-  -- node /absolute/path/to/mcp_excalidraw/dist/index.js
+# Project-level (shared via .mcp.json — written automatically by setup):
+claude mcp add excalidrop --scope project -- npx -y excalidrop@latest mcp --repo owner/repo
+# User-level (all projects):
+claude mcp add excalidrop --scope user -- npx -y excalidrop@latest mcp --repo owner/repo
 ```
 
 **Manage servers:**
 ```bash
-claude mcp list              # List configured servers
-claude mcp remove excalidraw # Remove a server
+claude mcp list                # List configured servers
+claude mcp remove excalidrop   # Remove a server
 ```
 
 ---
@@ -184,17 +147,12 @@ claude mcp remove excalidraw # Remove a server
 
 Config location: `.cursor/mcp.json` in your project root (or `~/.cursor/mcp.json` for global config)
 
-**Local (node)**
 ```json
 {
   "mcpServers": {
-    "excalidraw": {
-      "command": "node",
-      "args": ["/absolute/path/to/mcp_excalidraw/dist/index.js"],
-      "env": {
-        "EXPRESS_SERVER_URL": "http://127.0.0.1:3000",
-        "ENABLE_CANVAS_SYNC": "true"
-      }
+    "excalidrop": {
+      "command": "npx",
+      "args": ["-y", "excalidrop@latest", "mcp", "--repo", "owner/repo"]
     }
   }
 }
@@ -204,20 +162,14 @@ Config location: `.cursor/mcp.json` in your project root (or `~/.cursor/mcp.json
 
 ### Codex CLI
 
-Use the `codex mcp add` command to register the MCP server.
-
-**Local (node)**
 ```bash
-codex mcp add excalidraw \
-  --env EXPRESS_SERVER_URL=http://127.0.0.1:3000 \
-  --env ENABLE_CANVAS_SYNC=true \
-  -- node /absolute/path/to/mcp_excalidraw/dist/index.js
+codex mcp add excalidrop -- npx -y excalidrop@latest mcp --repo owner/repo
 ```
 
 **Manage servers:**
 ```bash
 codex mcp list              # List configured servers
-codex mcp remove excalidraw # Remove a server
+codex mcp remove excalidrop # Remove a server
 ```
 
 ---
@@ -226,19 +178,14 @@ codex mcp remove excalidraw # Remove a server
 
 Config location: `~/.config/opencode/opencode.json` or project-level `opencode.json`
 
-**Local (node)**
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "excalidraw": {
+    "excalidrop": {
       "type": "local",
-      "command": ["node", "/absolute/path/to/mcp_excalidraw/dist/index.js"],
-      "enabled": true,
-      "environment": {
-        "EXPRESS_SERVER_URL": "http://127.0.0.1:3000",
-        "ENABLE_CANVAS_SYNC": "true"
-      }
+      "command": ["npx", "-y", "excalidrop@latest", "mcp", "--repo", "owner/repo"],
+      "enabled": true
     }
   }
 }
@@ -250,17 +197,12 @@ Config location: `~/.config/opencode/opencode.json` or project-level `opencode.j
 
 Config location: `~/.gemini/antigravity/mcp_config.json`
 
-**Local (node)**
 ```json
 {
   "mcpServers": {
-    "excalidraw": {
-      "command": "node",
-      "args": ["/absolute/path/to/mcp_excalidraw/dist/index.js"],
-      "env": {
-        "EXPRESS_SERVER_URL": "http://127.0.0.1:3000",
-        "ENABLE_CANVAS_SYNC": "true"
-      }
+    "excalidrop": {
+      "command": "npx",
+      "args": ["-y", "excalidrop@latest", "mcp", "--repo", "owner/repo"]
     }
   }
 }
@@ -270,9 +212,9 @@ Config location: `~/.gemini/antigravity/mcp_config.json`
 
 ### Notes
 
-- **Canvas server**: Must be running before the MCP server connects. Start it with `npx excalidrop up`.
-- **Absolute paths**: When using local node setup, replace `/absolute/path/to/mcp_excalidraw` with the actual path where you cloned and built the repo.
-- **In-memory storage**: The canvas server stores elements in memory. Restarting the server will clear all elements. Use the export/import scripts if you need persistence.
+- **No install, no local server**: replace `owner/repo` with your canvas repo. Auth via `GITHUB_TOKEN`, `gh auth`, or `npx excalidrop login`.
+- **Scene storage**: `canvas.excalidraw` on the repo's `excalidrop` branch (+ `snapshots/*.json`). Nothing lives in memory to lose.
+- **Screenshots** (`get_canvas_screenshot`, `export_to_image`, `set_viewport`) need one viewer tab open (relay); everything else works headless.
 
 ## Agent Skill (Optional)
 
@@ -313,12 +255,12 @@ To update an existing installation, remove the old folder first then re-copy.
 
 ### Use The Skill Scripts
 
-All scripts respect `EXPRESS_SERVER_URL` (default `http://127.0.0.1:3000`) or accept `--url`.
+Skill scripts talk to the remote canvas via `gh` auth (no local server):
 
 ```bash
-EXPRESS_SERVER_URL=http://127.0.0.1:3000 node skills/excalidraw-skill/scripts/healthcheck.cjs
-EXPRESS_SERVER_URL=http://127.0.0.1:3000 node skills/excalidraw-skill/scripts/export-elements.cjs --out diagram.elements.json
-EXPRESS_SERVER_URL=http://127.0.0.1:3000 node skills/excalidraw-skill/scripts/import-elements.cjs --in diagram.elements.json --mode batch
+node skills/excalidraw-skill/scripts/healthcheck.cjs --repo owner/repo
+node skills/excalidraw-skill/scripts/export-elements.cjs --repo owner/repo --out diagram.elements.json
+node skills/excalidraw-skill/scripts/import-elements.cjs --repo owner/repo --in diagram.elements.json --mode batch
 ```
 
 ### When The Skill Is Useful
@@ -330,7 +272,7 @@ EXPRESS_SERVER_URL=http://127.0.0.1:3000 node skills/excalidraw-skill/scripts/im
 
 See `skills/excalidraw-skill/SKILL.md` and `skills/excalidraw-skill/references/cheatsheet.md`.
 
-## MCP Tools (26 Total)
+## MCP Tools (31 Total, remote-only)
 
 | Category | Tools |
 |---|---|
@@ -347,51 +289,36 @@ Full schemas are discoverable via `tools/list` or in `skills/excalidraw-skill/re
 
 ## Testing
 
-### Canvas Smoke Test (HTTP)
+### Status
 
 ```bash
-curl http://127.0.0.1:3000/health
-```
-
-### Local Bind Regression Test
-
-```bash
-npm run test:bind
+npx excalidrop status   # repo + auth + scene element count
 ```
 
 ### MCP Smoke Test (MCP Inspector)
 
 List tools:
 ```bash
-npx @modelcontextprotocol/inspector --cli \
-  -e EXPRESS_SERVER_URL=http://127.0.0.1:3000 \
-  -e ENABLE_CANVAS_SYNC=true -- \
-  node dist/index.js --method tools/list
+npx @modelcontextprotocol/inspector --cli -- node dist/mcp.js --repo owner/repo --method tools/list
 ```
 
-Create a rectangle:
+Create a rectangle (commits to the repo's `excalidrop` branch):
 ```bash
-npx @modelcontextprotocol/inspector --cli \
-  -e EXPRESS_SERVER_URL=http://127.0.0.1:3000 \
-  -e ENABLE_CANVAS_SYNC=true -- \
-  node dist/index.js --method tools/call --tool-name create_element \
+npx @modelcontextprotocol/inspector --cli -- node dist/mcp.js --repo owner/repo \
+  --method tools/call --tool-name create_element \
   --tool-arg type=rectangle --tool-arg x=100 --tool-arg y=100 \
   --tool-arg width=300 --tool-arg height=200
 ```
 
-### Frontend Screenshots (agent-browser)
+### Viewer screenshots
 
-If you use `agent-browser` for UI checks:
-```bash
-agent-browser install
-agent-browser open http://127.0.0.1:3000
-agent-browser wait --load networkidle
-agent-browser screenshot /tmp/canvas.png
-```
+Open the canvas URL once, then call `get_canvas_screenshot` — it renders via the shared relay (`EXCALIDROP_RELAY_URL`, `--no-relay` falls back to the GitHub command queue).
 
 ## Troubleshooting
 
-- Canvas not updating: confirm `EXPRESS_SERVER_URL` points at the running canvas server.
+- `No repo selected`: pass `--repo=owner/repo`, set `EXCALIDROP_REPO`, or run `npx excalidrop setup owner/repo`.
+- `No GitHub token`: run `gh auth login` or `npx excalidrop login`.
+- Screenshot `503 no viewer connected`: open the canvas URL in a browser first.
 - Updates/deletes fail after batch creation: ensure you are on a build that includes the batch id preservation fix (merged via PR #34).
 
 ## Known Issues / TODO

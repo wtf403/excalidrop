@@ -1,4 +1,16 @@
-# excalidrop-auth — OAuth exchange worker
+# excalidrop worker — OAuth exchange + shared relay
+
+Routes: `GET /health`, `POST /exchange` (code→token), `WS /relay?repo=o/r`
+(viewer tabs), `POST /rpc/:repo/:method` (MCP screenshots/viewport, BYOT auth).
+
+Relay auth: caller passes their GitHub user token as `Bearer`; the
+`RelayRoom` Durable Object verifies `pull`/`push` against `api.github.com`
+(cached ~60s by token hash) and refuses without repo access. Nothing is
+persisted — pending rpc lives ≤30s in DO memory, then drops.
+Deploy: `wrangler deploy` (needs `RELAY` DO binding — already in
+`wrangler.toml` — plus `wrangler secret put GITHUB_CLIENT_SECRET`).
+
+# excalidrop-auth — OAuth exchange worker (legacy title kept below)
 
 One-click "Log in with GitHub" on the static canvas needs this: GitHub's
 token endpoints send no CORS headers and the code→token exchange requires

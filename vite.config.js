@@ -21,15 +21,8 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    proxy: {
-      '/api': {
-        target: 'http://127.0.0.1:3000',
-        changeOrigin: true,
-      },
-      '/health': {
-        target: 'http://127.0.0.1:3000',
-        changeOrigin: true,
-      },
-    },
+    // Remote-only: no local canvas server. The viewer talks to GitHub
+    // (scene) + the shared relay (rpc) directly. ?repo=owner/name override
+    // in dev comes from ghSync.detectRepo().
   },
 })

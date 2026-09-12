@@ -1,70 +1,26 @@
 #!/usr/bin/env node
 /* eslint-disable no-console */
-
-const fs = require("node:fs");
-
-const DEFAULT_URL = process.env.EXPRESS_SERVER_URL || "http://127.0.0.1:3000";
-
-function usage() {
-  console.error(
-    [
-      "Usage:",
-      "  node scripts/update-element.cjs --id <id> (--data <json> | --file <path>) [--url <canvasUrl>]",
-      "",
-      "Examples:",
-      '  node scripts/update-element.cjs --id abc --data \'{"x":200,"y":250,"backgroundColor":"#ffeeee"}\'',
-      "  node scripts/update-element.cjs --id abc --file updates.json",
-    ].join("\n"),
-  );
-  process.exit(2);
-}
-
-function parseArgs(argv) {
-  const out = { url: DEFAULT_URL, id: null, data: null, file: null };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--url") out.url = argv[++i];
-    else if (a === "--id") out.id = argv[++i];
-    else if (a === "--data") out.data = argv[++i];
-    else if (a === "--file") out.file = argv[++i];
-  }
-  return out;
-}
-
-function readJson({ data, file }) {
-  if (data) return JSON.parse(data);
-  if (file) return JSON.parse(fs.readFileSync(file, "utf8"));
-  usage();
-}
+// Remote-only update. Usage: --repo owner/repo --id <id> (--data <json> | --file <path>)
+const fs = require('node:fs');
+const { repoFromArgs, token, getScene, putScene } = require('./gh-helper.cjs');
 
 async function main() {
-  if (typeof fetch !== "function") {
-    throw new Error("This script requires Node 18+ (global fetch).");
+  const argv = process.argv.slice(2);
+  const repo = repoFromArgs(argv);
+  let id = null; let data = null; let file = null;
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--id') id = argv[++i];
+    else if (argv[i] === '--data') data = argv[++i];
+    else if (argv[i] === '--file') file = argv[++i];
   }
-
-  const args = parseArgs(process.argv.slice(2));
-  if (!args.id) usage();
-  const payload = readJson(args);
-
-  const baseUrl = args.url.replace(/\/$/, "");
-  const res = await fetch(`${baseUrl}/api/elements/${encodeURIComponent(args.id)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-
-  const json = await res.json().catch(() => null);
-  if (!res.ok || !json || json.success !== true) {
-    throw new Error(
-      `Failed to update element: ${res.status} ${res.statusText} ${json?.error ? `- ${json.error}` : ""}`,
-    );
-  }
-
-  process.stdout.write(JSON.stringify(json.element, null, 2) + "\n");
+  if (!repo || !id || (!data && !file)) throw new Error('Usage: --repo owner/repo --id <id> (--data \'<json>\' | --file <path>)');
+  if (!token()) throw new Error('No GitHub token.');
+  const patch = data ? JSON.parse(data) : JSON.parse(fs.readFileSync(file, 'utf8'));
+  const scene = await getScene(repo);
+  const els = scene.elements.map((e) => (e.id === id ? { ...e, ...patch, id } : e));
+  if (!els.some((e) => e.id === id)) throw new Error(`Element ${id} not found`);
+  await putScene(repo, els, scene.files, scene.sha, `excalidrop: update ${id} via skill`);
+  process.stdout.write(JSON.stringify(els.find((e) => e.id === id), null, 2) + '\n');
 }
 
-main().catch((err) => {
-  console.error(err?.stack || String(err));
-  process.exit(1);
-});
-
+main().catch((err) => { console.error(err?.stack || String(err)); process.exit(1); });

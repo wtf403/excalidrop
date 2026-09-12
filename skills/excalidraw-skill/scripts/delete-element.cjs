@@ -1,48 +1,18 @@
 #!/usr/bin/env node
 /* eslint-disable no-console */
-
-const DEFAULT_URL = process.env.EXPRESS_SERVER_URL || "http://127.0.0.1:3000";
-
-function usage() {
-  console.error("Usage: node scripts/delete-element.cjs --id <id> [--url <canvasUrl>]");
-  process.exit(2);
-}
-
-function parseArgs(argv) {
-  const out = { url: DEFAULT_URL, id: null };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--url") out.url = argv[++i];
-    else if (a === "--id") out.id = argv[++i];
-  }
-  return out;
-}
+// Remote-only delete. Usage: --repo owner/repo --id <id>
+const { repoFromArgs, token, getScene, putScene } = require('./gh-helper.cjs');
 
 async function main() {
-  if (typeof fetch !== "function") {
-    throw new Error("This script requires Node 18+ (global fetch).");
-  }
-
-  const args = parseArgs(process.argv.slice(2));
-  if (!args.id) usage();
-
-  const baseUrl = args.url.replace(/\/$/, "");
-  const res = await fetch(`${baseUrl}/api/elements/${encodeURIComponent(args.id)}`, {
-    method: "DELETE",
-  });
-
-  const json = await res.json().catch(() => null);
-  if (!res.ok || !json || json.success !== true) {
-    throw new Error(
-      `Failed to delete element: ${res.status} ${res.statusText} ${json?.error ? `- ${json.error}` : ""}`,
-    );
-  }
-
-  console.log(`Deleted ${args.id}`);
+  const argv = process.argv.slice(2);
+  const repo = repoFromArgs(argv);
+  let id = null;
+  for (let i = 0; i < argv.length; i++) if (argv[i] === '--id') id = argv[++i];
+  if (!repo || !id) throw new Error('Usage: --repo owner/repo --id <id>');
+  if (!token()) throw new Error('No GitHub token.');
+  const scene = await getScene(repo);
+  await putScene(repo, scene.elements.filter((e) => e.id !== id), scene.files, scene.sha, `excalidrop: delete ${id} via skill`);
+  console.log(`Deleted ${id}`);
 }
 
-main().catch((err) => {
-  console.error(err?.stack || String(err));
-  process.exit(1);
-});
-
+main().catch((err) => { console.error(err?.stack || String(err)); process.exit(1); });

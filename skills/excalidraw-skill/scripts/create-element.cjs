@@ -1,68 +1,25 @@
 #!/usr/bin/env node
 /* eslint-disable no-console */
-
-const fs = require("node:fs");
-
-const DEFAULT_URL = process.env.EXPRESS_SERVER_URL || "http://127.0.0.1:3000";
-
-function usage() {
-  console.error(
-    [
-      "Usage:",
-      "  node scripts/create-element.cjs (--data <json> | --file <path>) [--url <canvasUrl>]",
-      "",
-      "Examples:",
-      '  node scripts/create-element.cjs --data \'{"type":"rectangle","x":100,"y":100,"width":300,"height":200}\'',
-      "  node scripts/create-element.cjs --file element.json",
-    ].join("\n"),
-  );
-  process.exit(2);
-}
-
-function parseArgs(argv) {
-  const out = { url: DEFAULT_URL, data: null, file: null };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--url") out.url = argv[++i];
-    else if (a === "--data") out.data = argv[++i];
-    else if (a === "--file") out.file = argv[++i];
-  }
-  return out;
-}
-
-function readJson({ data, file }) {
-  if (data) return JSON.parse(data);
-  if (file) return JSON.parse(fs.readFileSync(file, "utf8"));
-  usage();
-}
+// Remote-only create. Usage: --repo owner/repo (--data <json> | --file <path>)
+const fs = require('node:fs');
+const crypto = require('node:crypto');
+const { repoFromArgs, token, getScene, putScene } = require('./gh-helper.cjs');
 
 async function main() {
-  if (typeof fetch !== "function") {
-    throw new Error("This script requires Node 18+ (global fetch).");
+  const argv = process.argv.slice(2);
+  const repo = repoFromArgs(argv);
+  let data = null; let file = null;
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--data') data = argv[++i];
+    else if (argv[i] === '--file') file = argv[++i];
   }
-
-  const args = parseArgs(process.argv.slice(2));
-  const payload = readJson(args);
-
-  const baseUrl = args.url.replace(/\/$/, "");
-  const res = await fetch(`${baseUrl}/api/elements`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-
-  const json = await res.json().catch(() => null);
-  if (!res.ok || !json || json.success !== true) {
-    throw new Error(
-      `Failed to create element: ${res.status} ${res.statusText} ${json?.error ? `- ${json.error}` : ""}`,
-    );
-  }
-
-  process.stdout.write(JSON.stringify(json.element, null, 2) + "\n");
+  if (!repo || (!data && !file)) throw new Error("Usage: --repo owner/repo (--data '<json>' | --file <path>)");
+  if (!token()) throw new Error('No GitHub token.');
+  const payload = data ? JSON.parse(data) : JSON.parse(fs.readFileSync(file, 'utf8'));
+  const el = { id: payload.id || crypto.randomUUID().slice(0, 12), ...payload };
+  const scene = await getScene(repo);
+  await putScene(repo, [...scene.elements, el], scene.files, scene.sha, 'excalidrop: create element via skill');
+  process.stdout.write(JSON.stringify(el, null, 2) + '\n');
 }
 
-main().catch((err) => {
-  console.error(err?.stack || String(err));
-  process.exit(1);
-});
-
+main().catch((err) => { console.error(err?.stack || String(err)); process.exit(1); });

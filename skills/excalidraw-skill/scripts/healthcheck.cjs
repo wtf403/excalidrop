@@ -1,35 +1,14 @@
 #!/usr/bin/env node
 /* eslint-disable no-console */
-
-const DEFAULT_URL = process.env.EXPRESS_SERVER_URL || "http://127.0.0.1:3000";
-
-function parseArgs(argv) {
-  const out = { url: DEFAULT_URL };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--url") out.url = argv[++i];
-  }
-  return out;
-}
+// Remote-only: checks gh auth + scene readability. Usage: --repo owner/repo
+const { repoFromArgs, token, getScene } = require('./gh-helper.cjs');
 
 async function main() {
-  if (typeof fetch !== "function") {
-    throw new Error("This script requires Node 18+ (global fetch).");
-  }
-
-  const { url } = parseArgs(process.argv.slice(2));
-  const res = await fetch(`${url.replace(/\/$/, "")}/health`);
-  const text = await res.text();
-
-  if (!res.ok) {
-    console.error(text);
-    process.exit(1);
-  }
-
-  console.log(text);
+  const repo = repoFromArgs(process.argv.slice(2));
+  if (!repo) throw new Error('Pass --repo owner/repo (or run inside a cloned repo).');
+  if (!token()) throw new Error('No GitHub token. Run `gh auth login` or `npx excalidrop login`.');
+  const scene = await getScene(repo);
+  console.log(JSON.stringify({ ok: true, repo, elements: scene.elements.length, sha: scene.sha?.slice(0, 7) || null }, null, 2));
 }
 
-main().catch((err) => {
-  console.error(err?.stack || String(err));
-  process.exit(1);
-});
+main().catch((err) => { console.error(err?.stack || String(err)); process.exit(1); });

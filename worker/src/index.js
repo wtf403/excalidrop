@@ -41,6 +41,8 @@ function originAllowed(origin, allowlist) {
   });
 }
 
+export { RelayRoom } from './relay.js';
+
 export default {
   async fetch(req, env) {
     const origin = req.headers.get('Origin') || '';
@@ -54,14 +56,27 @@ export default {
     const cors = {
       'Access-Control-Allow-Origin': originOk ? origin : 'null',
       'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
       Vary: 'Origin',
     };
     if (req.method === 'OPTIONS') return new Response(null, { headers: cors });
 
     const url = new URL(req.url);
     if (req.method === 'GET' && url.pathname === '/health') {
-      return json({ ok: true }, 200, cors);
+      return json({ ok: true, relay: !!env.RELAY }, 200, cors);
+    }
+    if (url.pathname === '/relay' || url.pathname.startsWith('/rpc/')) {
+      if (!env.RELAY) return json({ error: 'relay not configured (missing durable object binding)' }, 500, cors);
+      const m = url.pathname.startsWith('/rpc/')
+        ? url.pathname.slice('/rpc/'.length).split('/')[0]
+        : url.searchParams.get('repo');
+      const repo = decodeURIComponent(m || '').split('/').slice(0, 2).join('/');
+      if (!/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(repo)) return json({ error: 'bad repo' }, 400, cors);
+      const id = env.RELAY.idFromName(`repo:${repo.toLowerCase()}`);
+      const stub = env.RELAY.get(id);
+      const fwd = new URL(req.url);
+      fwd.searchParams.set('repo', repo.toLowerCase());
+      return stub.fetch(new Request(fwd.toString(), req));
     }
     if (req.method !== 'POST' || url.pathname !== '/exchange') {
       return json({ error: 'not found' }, 404, cors);

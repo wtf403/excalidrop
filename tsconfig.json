@@ -9,7 +9,7 @@
     "declarationMap": true,
     "sourceMap": true,
     "outDir": "./dist",
-    "rootDir": "./src",
+    "rootDir": ".",
     "strict": true,
     "noImplicitAny": true,
     "strictNullChecks": true,
@@ -33,7 +33,8 @@
     "types": ["node"]
   },
   "include": [
-    "src/**/*.ts"
+    "mcp.ts",
+    "cli.ts"
   ],
   "exclude": [
     "node_modules",

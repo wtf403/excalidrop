@@ -61,8 +61,8 @@ jobs:
 
       - name: Verify artifacts
         run: |
-          test -f dist/index.js || (echo "dist/index.js missing" && exit 1)
-          test -f dist/server.js || (echo "dist/server.js missing" && exit 1)
+          test -f dist/mcp.js || (echo "dist/mcp.js missing" && exit 1)
+          test -f dist/cli.js || (echo "dist/cli.js missing" && exit 1)
           test -d dist/frontend || (echo "dist/frontend missing" && exit 1)
           echo "✅ All artifacts present"
 

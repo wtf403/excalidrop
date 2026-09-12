@@ -1,38 +1,15 @@
 #!/usr/bin/env node
 /* eslint-disable no-console */
-
-const DEFAULT_URL = process.env.EXPRESS_SERVER_URL || "http://127.0.0.1:3000";
-
-function parseArgs(argv) {
-  const out = { url: DEFAULT_URL };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--url") out.url = argv[++i];
-  }
-  return out;
-}
+// Remote-only clear (commits to GitHub). Usage: --repo owner/repo
+const { repoFromArgs, token, getScene, putScene } = require('./gh-helper.cjs');
 
 async function main() {
-  if (typeof fetch !== "function") {
-    throw new Error("This script requires Node 18+ (global fetch).");
-  }
-
-  const { url } = parseArgs(process.argv.slice(2));
-  const baseUrl = url.replace(/\/$/, "");
-
-  const res = await fetch(`${baseUrl}/api/elements/clear`, {
-    method: "DELETE",
-  });
-
-  const json = await res.json().catch(() => null);
-  if (!res.ok || !json || json.success !== true) {
-    throw new Error(`Failed to clear canvas: ${res.status} ${res.statusText} ${json?.error ? `- ${json.error}` : ""}`);
-  }
-
-  console.log(`Cleared canvas (${json.count} elements removed)`);
+  const repo = repoFromArgs(process.argv.slice(2));
+  if (!repo) throw new Error('Pass --repo owner/repo.');
+  if (!token()) throw new Error('No GitHub token. Run `gh auth login` or `npx excalidrop login`.');
+  const scene = await getScene(repo);
+  await putScene(repo, [], scene.files, scene.sha, `excalidrop: clear canvas (${scene.elements.length} removed)`);
+  console.log(`Cleared canvas (${scene.elements.length} elements removed)`);
 }
 
-main().catch((err) => {
-  console.error(err?.stack || String(err));
-  process.exit(1);
-});
+main().catch((err) => { console.error(err?.stack || String(err)); process.exit(1); });

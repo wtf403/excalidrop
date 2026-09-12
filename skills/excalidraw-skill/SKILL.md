@@ -1,6 +1,6 @@
 ---
 name: excalidraw-skill
-description: Programmatic canvas toolkit for creating, editing, and refining Excalidraw diagrams via MCP tools with real-time canvas sync. Use when an agent needs to (1) draw or lay out diagrams on a live canvas, (2) iteratively refine diagrams using describe_scene and get_canvas_screenshot to see its own work, (3) export/import .excalidraw files or PNG/SVG images, (4) save/restore canvas snapshots, (5) convert Mermaid to Excalidraw, or (6) perform element-level CRUD, alignment, distribution, grouping, duplication, and locking. Requires a running canvas server (EXPRESS_SERVER_URL, default http://127.0.0.1:3000).
+description: Programmatic canvas toolkit for creating, editing, and refining Excalidraw diagrams via remote MCP tools (GitHub is the canvas, no local server). Use when an agent needs to (1) draw or lay out diagrams on a remote canvas, (2) iteratively refine diagrams using describe_scene and get_canvas_screenshot to see its own work, (3) export/import .excalidraw files or PNG/SVG images, (4) save/restore canvas snapshots, (5) convert Mermaid to Excalidraw, or (6) perform element-level CRUD, alignment, distribution, grouping, duplication, and locking. Requires `npx excalidrop setup owner/repo` once (gh auth + viewer host).
 ---
 
 # Excalidraw Skill
@@ -11,35 +11,33 @@ Two modes are available. Try MCP first — it has more capabilities.
 
 **MCP mode** (preferred): If `excalidraw/batch_create_elements` and other `excalidraw/*` tools appear in your tool list, use them directly. MCP tools handle label and arrow binding format automatically.
 
-**REST API mode** (fallback): If MCP tools aren't available, use HTTP endpoints at `http://127.0.0.1:3000`. See the cheatsheet for REST payloads. Note the format differences in the table below — REST and MCP accept slightly different field names.
+**Skill scripts mode** (fallback): If MCP tools aren't available, use `skills/excalidraw-skill/scripts/*.cjs` with `--repo owner/repo` (they talk to GitHub directly via `gh` auth — no local server). See the cheatsheet for payloads.
 
 **Neither works?** Tell the user:
-> The Excalidraw canvas server is not running. To set up:
-> 1. `git clone https://github.com/yctimlin/mcp_excalidraw && cd mcp_excalidraw`
-> 2. `npm ci && npm run build`
-> 3. `PORT=3000 npm run canvas`
-> 4. Open `http://127.0.0.1:3000` in a browser
-> 5. (Recommended) Install the MCP server:
->    `claude mcp add excalidraw -s user -e EXPRESS_SERVER_URL=http://127.0.0.1:3000 -- node /path/to/mcp_excalidraw/dist/index.js`
+> The remote canvas isn't set up. To set up:
+> 1. `gh auth login` (or `npx excalidrop login`)
+> 2. `npx excalidrop setup owner/repo` (picks Pages for public, Cloudflare for private)
+> 3. `claude mcp add excalidrop --scope project -- npx -y excalidrop@latest mcp --repo owner/repo`
+> 4. Open the printed canvas URL once (screenshots/viewport need one viewer tab open)
 
-### MCP vs REST API Quick Reference
+### MCP vs Skill Scripts Quick Reference
 
-| Operation | MCP Tool | REST API Equivalent |
+| Operation | MCP Tool | Skill script Equivalent |
 |-----------|----------|-------------------|
-| Create elements | `batch_create_elements` | `POST /api/elements/batch` |
-| Get all elements | `query_elements` | `GET /api/elements` |
-| Get one element | `get_element` | `GET /api/elements/:id` |
-| Update element | `update_element` | `PUT /api/elements/:id` |
-| Delete element | `delete_element` | `DELETE /api/elements/:id` |
-| Clear canvas | `clear_canvas` | `DELETE /api/elements/clear` |
-| Describe scene | `describe_scene` | `GET /api/elements` (parse manually) |
-| Export scene | `export_scene` | `GET /api/elements` (save to file) |
-| Import scene | `import_scene` | `POST /api/elements/sync` |
-| Snapshot | `snapshot_scene` | `POST /api/snapshots` |
-| Restore snapshot | `restore_snapshot` | `GET /api/snapshots/:name` then `POST /api/elements/sync` |
-| Screenshot | `get_canvas_screenshot` | `POST /api/export/image` (needs browser) |
-| Viewport | `set_viewport` | `POST /api/viewport` (needs browser) |
-| Export image | `export_to_image` | `POST /api/export/image` (needs browser) |
+| Create elements | `batch_create_elements` | `create-element.cjs --repo owner/repo --data '<json>'` |
+| Get all elements | `query_elements` | `export-elements.cjs --repo owner/repo` |
+| Get one element | `get_element` | `export-elements.cjs --repo owner/repo` (filter by id) |
+| Update element | `update_element` | `update-element.cjs --repo owner/repo --id <id> --data '<json>'` |
+| Delete element | `delete_element` | `delete-element.cjs --repo owner/repo --id <id>` |
+| Clear canvas | `clear_canvas` | `clear-canvas.cjs --repo owner/repo` |
+| Describe scene | `describe_scene` | `export-elements.cjs --repo owner/repo` (parse manually) |
+| Export scene | `export_scene` | `export-elements.cjs --repo owner/repo --out file` |
+| Import scene | `import_scene` | `import-elements.cjs --repo owner/repo --in file --mode merge\|replace` |
+| Snapshot | `snapshot_scene` | Only via MCP (stored as `snapshots/<name>.json` on the `excalidrop` branch) |
+| Restore snapshot | `restore_snapshot` | Only via MCP |
+| Screenshot | `get_canvas_screenshot` | Only via MCP (needs viewer tab open) |
+| Viewport | `set_viewport` | Only via MCP (needs viewer tab open) |
+| Export image | `export_to_image` | Only via MCP (needs viewer tab open) |
 | Export URL | `export_to_excalidraw_url` | Only via MCP |
 
 ### Format Differences Between Modes (Critical)
@@ -109,7 +107,7 @@ Excalidraw diagrams are visual communication. If text is cut off, elements overl
 
 ### Quality Checklist
 
-After each `batch_create_elements` / `POST /api/elements/batch`, take a screenshot and check:
+After each `batch_create_elements`, take a screenshot and check:
 
 1. **Text truncation** — Is all label text fully visible? Truncated text means the shape is too small. Increase `width` and/or `height`.
 2. **Overlap** — Do any shapes share the same space? Background zones must fully contain children with padding.
@@ -156,25 +154,19 @@ If you find any issue: **stop, fix it, re-screenshot, then continue.** Say "I se
 ]}
 ```
 
-### REST API Mode
+### Skill Scripts Mode (no MCP)
 
 1. Plan your coordinate grid first.
-2. Optional: `curl -X DELETE http://127.0.0.1:3000/api/elements/clear`
-3. Create elements using `POST /api/elements/batch`. Use `"label": {"text": "..."}` for labels.
-4. Bind arrows with `"start": {"id": "..."}` / `"end": {"id": "..."}`.
-5. Verify with `POST /api/export/image` → save PNG → run Quality Checklist.
+2. Optional: `node scripts/clear-canvas.cjs --repo owner/repo`
+3. Create elements: `node scripts/create-element.cjs --repo owner/repo --data '{"type":"rectangle","x":100,"y":100,"width":160,"height":60,"text":"Service A"}'`. Use `"text"` for labels.
+4. Bind arrows with `startElementId` / `endElementId` (same as MCP).
+5. Verify with `get_canvas_screenshot` (MCP, needs viewer tab open) → run Quality Checklist.
 
-**REST API element + arrow example:**
+**Skill script element + arrow example:**
 ```bash
-curl -X POST http://127.0.0.1:3000/api/elements/batch \
-  -H "Content-Type: application/json" \
-  -d '{
-    "elements": [
-      {"id": "svc-a", "type": "rectangle", "x": 100, "y": 100, "width": 160, "height": 60, "label": {"text": "Service A"}},
-      {"id": "svc-b", "type": "rectangle", "x": 400, "y": 100, "width": 160, "height": 60, "label": {"text": "Service B"}},
-      {"type": "arrow", "x": 0, "y": 0, "start": {"id": "svc-a"}, "end": {"id": "svc-b"}, "label": {"text": "calls"}}
-    ]
-  }'
+node scripts/create-element.cjs --repo owner/repo --data '{"id":"svc-a","type":"rectangle","x":100,"y":100,"width":160,"height":60,"text":"Service A"}'
+node scripts/create-element.cjs --repo owner/repo --data '{"id":"svc-b","type":"rectangle","x":400,"y":100,"width":160,"height":60,"text":"Service B"}'
+node scripts/create-element.cjs --repo owner/repo --data '{"type":"arrow","x":0,"y":0,"startElementId":"svc-a","endElementId":"svc-b","text":"calls"}'
 ```
 
 ---
@@ -229,11 +221,11 @@ batch_create_elements
   → proceed
 ```
 
-**Feedback loop (REST):**
+**Feedback loop (scripts):**
 ```
-POST /api/elements/batch
-  → POST /api/export/image → save PNG → evaluate
-  → PUT /api/elements/:id (fix issues) → re-screenshot → evaluate
+create-element.cjs / import-elements.cjs
+  → get_canvas_screenshot (MCP, viewer tab open) → evaluate
+  → update-element.cjs (fix issues) → re-screenshot → evaluate
   → proceed
 ```
 
@@ -259,12 +251,7 @@ create_from_mermaid(mermaidDiagram: "graph TD\n  A --> B\n  B --> C")
 ```
 After conversion, call `set_viewport` with `scrollToContent: true` and `get_canvas_screenshot` to verify layout. If the auto-layout is poor (nodes crowded, edges crossing), identify problem elements with `describe_scene` and reposition with `update_element`.
 
-**REST mode:**
-```bash
-curl -X POST http://127.0.0.1:3000/api/elements/from-mermaid \
-  -H "Content-Type: application/json" \
-  -d '{"mermaid": "graph TD\n  A --> B\n  B --> C"}'
-```
+**Without MCP:** open the canvas viewer tab, then call `create_from_mermaid` from any MCP client — conversion runs in the viewer via the relay/queue.
 
 ---
 
@@ -274,8 +261,8 @@ curl -X POST http://127.0.0.1:3000/api/elements/from-mermaid \
 - Import from `.excalidraw`: `import_scene` with `mode: "replace"` or `"merge"`
 - Export to image: `export_to_image` with `format: "png"` or `"svg"` (requires browser open)
 - Share link: `export_to_excalidraw_url` — encrypts scene, returns shareable excalidraw.com URL
-- CLI export: `node scripts/export-elements.cjs --out diagram.elements.json`
-- CLI import: `node scripts/import-elements.cjs --in diagram.elements.json --mode batch|sync`
+- CLI export: `node scripts/export-elements.cjs --repo owner/repo --out diagram.elements.json`
+- CLI import: `node scripts/import-elements.cjs --repo owner/repo --in diagram.elements.json --mode merge|replace`
 
 ## Workflow: Snapshots
 
@@ -290,11 +277,11 @@ curl -X POST http://127.0.0.1:3000/api/elements/from-mermaid \
 ## Error Recovery
 
 - **Elements not appearing?** Check `describe_scene` — they may have been created off-screen. Use `set_viewport` with `scrollToContent: true`.
-- **Arrow not connecting?** Verify element IDs with `get_element`. Make sure `startElementId`/`endElementId` (MCP) or `start.id`/`end.id` (REST) match existing element IDs.
+- **Arrow not connecting?** Verify element IDs with `get_element`. Make sure `startElementId`/`endElementId` match existing element IDs.
 - **Canvas in a bad state?** `snapshot_scene` first, then `clear_canvas` and rebuild. Or `restore_snapshot` to go back.
 - **Element won't update?** It may be locked — call `unlock_elements` first.
 - **Layout looking wrong after import?** Use `describe_scene` to inspect actual positions, then batch-update positions.
-- **Duplicate text elements / element count doubling?** The frontend has an auto-sync timer that periodically sends the full Excalidraw scene back to the server (overwriting). Excalidraw internally generates a bound text element for every shape that has `label.text`. If you clear and re-send elements, Excalidraw may re-inject its cached bound texts, causing duplicates. To clean up: (1) use `query_elements` / `GET /api/elements` to find elements of `type: "text"` with a `containerId`; (2) delete the unwanted ones with `delete_element`; (3) wait a few seconds for auto-sync to settle before exporting. The safest approach is to **never put labels on background zone rectangles** — use free-standing text elements instead.
+- **Duplicate text elements / element count doubling?** Excalidraw internally generates a bound text element for every shape that has `label.text`. If you clear and re-send elements, the viewer may re-inject cached bound texts. To clean up: (1) use `query_elements` to find elements of `type: "text"` with a `containerId`; (2) delete the unwanted ones with `delete_element`; (3) wait a few seconds for viewer autosync to settle before exporting. The safest approach is to **never put labels on background zone rectangles** — use free-standing text elements instead.
 
 ---
 
