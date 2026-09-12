@@ -149,7 +149,11 @@ function projectNameForRepo(repo: string): string {
 }
 
 function viewerUrlFor(repo: string, target: HostTarget): string {
-  if (target === 'cloudflare') return `https://${projectNameForRepo(repo)}.pages.dev/`;
+  if (target === 'cloudflare') {
+    // Generic viewer build can't infer the repo from a pages.dev host —
+    // detectRepo() reads it from ?repo= instead.
+    return `https://${projectNameForRepo(repo)}.pages.dev/?repo=${repo}`;
+  }
   const [owner, name] = repo.split('/');
   return `https://${owner}.github.io/${name}/`;
 }
@@ -170,7 +174,15 @@ async function resolveTarget(repo: string, explicit?: string): Promise<HostTarge
 }
 
 function deployToCloudflarePages(project: string): void {
-  const r = spawnSync('npx', ['-y', 'wrangler', 'pages', 'deploy', viewerDir(), '--project-name', project], { stdio: 'inherit', env: process.env });
+  // wrangler 4 doesn't auto-create Pages projects and its Workers delegation
+  // misfires on explicit asset dirs — create once, then deploy classic with --force.
+  const WRANGLER = ['-y', 'wrangler@4'];
+  const create = spawnSync('npx', [...WRANGLER, 'pages', 'project', 'create', project, '--force', '--production-branch=main'], { stdio: 'pipe', encoding: 'utf8', env: process.env });
+  const createOut = (create.stdout || '') + (create.stderr || '');
+  if (create.status !== 0 && !/already exists/i.test(createOut)) {
+    throw new Error(`wrangler pages project create failed:\n${createOut.slice(-800)}\nRun \`wrangler login\` first (or set CLOUDFLARE_API_TOKEN).`);
+  }
+  const r = spawnSync('npx', [...WRANGLER, 'pages', 'deploy', viewerDir(), '--project-name', project, '--force'], { stdio: 'inherit', env: process.env });
   if (r.status !== 0) throw new Error('wrangler pages deploy failed. Run `wrangler login` first (or set CLOUDFLARE_API_TOKEN).');
 }
 
@@ -250,8 +262,11 @@ function printEditorCommands(ids: EditorId[], repo: string): void {
 }
 
 function parseFlag(args: string[], name: string): string | undefined {
-  const hit = args.find((a) => a.startsWith(`--${name}=`));
-  return hit ? hit.split('=').slice(1).join('=') : undefined;
+  const eq = args.find((a) => a.startsWith(`--${name}=`));
+  if (eq) return eq.split('=').slice(1).join('=');
+  const i = args.indexOf(`--${name}`);
+  if (i !== -1 && args[i + 1] && !args[i + 1]!.startsWith('-')) return args[i + 1];
+  return undefined;
 }
 
 function parseEditorsFlag(args: string[]): EditorId[] | null {
@@ -276,6 +291,15 @@ async function cmdSetup(args: string[], editorOverride?: EditorId[]): Promise<{ 
   if (!ghAuthed() && !process.env.GITHUB_TOKEN) {
     console.error('Not logged in to GitHub. Run `gh auth login` or `npx excalidrop login` first.');
     process.exit(1);
+  }
+  try {
+    await ghGet(`/repos/${slug}`);
+  } catch (e) {
+    if (String((e as Error).message).includes('→ 404')) {
+      console.error(`Repo "${slug}" not found (404). Check the slug for typos, or create it:\n\n  gh repo create ${slug} --private   # or --public\n`);
+      process.exit(1);
+    }
+    throw e;
   }
   const explicitTarget = parseFlag(args, 'target');
   const target = await resolveTarget(slug, explicitTarget);
