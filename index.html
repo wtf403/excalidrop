@@ -13,79 +13,14 @@
             background-color: #f5f5f5;
         }
         
-        .header {
-            background: #fff;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            padding: 10px 20px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            flex-wrap: wrap;
-            gap: 10px;
-        }
-        
-        .header h1 {
-            margin: 0;
-            color: #333;
-            font-size: 24px;
-        }
-        
-        .controls {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-        
-        button {
+        .pill button,
+        .login-panel button {
             padding: 8px 16px;
             border: none;
             border-radius: 4px;
             cursor: pointer;
             font-size: 14px;
             transition: background-color 0.2s;
-        }
-        
-        .btn-primary {
-            background-color: #007bff;
-            color: white;
-        }
-        
-        .btn-primary:hover {
-            background-color: #0056b3;
-        }
-        
-        .btn-secondary {
-            background-color: #6c757d;
-            color: white;
-        }
-        
-        .btn-secondary:hover {
-            background-color: #545b62;
-        }
-        
-        .btn-success {
-            background-color: #28a745;
-            color: white;
-        }
-        
-        .btn-success:hover {
-            background-color: #218838;
-        }
-        
-        .btn-danger {
-            background-color: #dc3545;
-            color: white;
-        }
-        
-        .btn-danger:hover {
-            background-color: #c82333;
-        }
-        
-        .status {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 14px;
         }
         
         .status-dot {
@@ -132,14 +67,78 @@
             box-shadow: none;
         }
 
+        /* Save/status block when docked in Excalidraw's own <Footer/>
+           (bottom-left bar): static flow instead of the floating overlay.
+           footer-center is a zero-gap flex row, so the pill needs its own
+           left margin to sit clear of the undo/redo island. */
+        .excalidraw .pill {
+            position: static;
+            z-index: auto;
+            margin-left: 0.5rem;
+        }
+
+        /* Save button portaled into Excalidraw's mobile side island
+           (.mobile-misc-tools-container): matches the 2rem ToolIcon
+           squares stacked there. Unsaved changes tint only the icon
+           stroke yellow — never the button background. */
+        .excalidraw .mobile-save-btn {
+            width: var(--default-button-size);
+            height: var(--default-button-size);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: transparent;
+            color: var(--icon-fill-color);
+            border: none;
+            border-radius: var(--border-radius-lg);
+            cursor: pointer;
+            padding: 0;
+        }
+
+        .excalidraw .mobile-save-btn:hover {
+            background: var(--button-hover-bg);
+        }
+
+        .excalidraw .mobile-save-btn.dirty {
+            background: transparent;
+            color: #ffd60a;
+        }
+
+        .excalidraw .mobile-save-btn.dirty:hover {
+            background: transparent;
+        }
+
+        .excalidraw .mobile-save-btn svg {
+            width: 16px;
+            height: 16px;
+            display: block;
+            flex: none;
+            fill: none;
+            stroke: currentColor;
+        }
+
         /* Flat look for Excalidraw chrome around the pill. */
         .excalidraw button,
-        .excalidraw .App-menu_top,
+        .excalidraw .App-menu_top__left,
         .excalidraw .App-menu__left {
             box-shadow: none !important;
         }
 
-        /* Icon-only save button docked inside the pill. */
+        /* Icon-only save button docked inside the pill.
+           Specificity beats `.pill button` so the icon button keeps
+           zero padding and a pinned 16px glyph. */
+        .pill .save-icon-btn {
+            padding: 0;
+        }
+
+        .save-icon-btn svg {
+            width: 16px;
+            height: 16px;
+            display: block;
+            flex: none;
+            fill: none;
+            stroke: currentColor;
+        }
         .save-icon-btn {
             display: flex;
             align-items: center;
@@ -219,14 +218,6 @@
             font-size: 12px;
         }
 
-        .login-code {
-            font-size: 28px;
-            font-weight: 700;
-            letter-spacing: 4px;
-            font-variant-numeric: tabular-nums;
-            user-select: all;
-        }
-
         .login-input {
             width: 100%;
             box-sizing: border-box;
@@ -271,176 +262,8 @@
 
 
 
-        .api-panel {
-            position: fixed;
-            right: 20px;
-            top: 100px;
-            background: white;
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            padding: 20px;
-            width: 300px;
-            max-height: 400px;
-            overflow-y: auto;
-            z-index: 1000;
-        }
-        
-        .api-panel h3 {
-            margin: 0 0 15px 0;
-            color: #333;
-            font-size: 18px;
-        }
-        
-        .api-form {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-        }
-        
-        .form-group {
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-        }
-        
-        label {
-            font-weight: 500;
-            color: #555;
-            font-size: 14px;
-        }
-        
-        input, select {
-            padding: 8px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            font-size: 14px;
-        }
-        
-        .form-row {
-            display: flex;
-            gap: 10px;
-        }
-        
-        .form-row .form-group {
-            flex: 1;
-        }
-        
-        .toggle-panel {
-            position: fixed;
-            right: 20px;
-            top: 60px;
-            background: #007bff;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            padding: 10px;
-            cursor: pointer;
-            font-size: 14px;
-            z-index: 1001;
-        }
-        
-        .api-panel.hidden {
-            display: none;
-        }
-        
-        .notification {
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            padding: 12px 16px;
-            border-radius: 4px;
-            color: white;
-            font-size: 14px;
-            z-index: 1002;
-            animation: slideIn 0.3s ease;
-        }
-        
-        .notification.success {
-            background-color: #28a745;
-        }
-        
-        .notification.error {
-            background-color: #dc3545;
-        }
-        
-        @keyframes slideIn {
-            from {
-                transform: translateX(100%);
-                opacity: 0;
-            }
-            to {
-                transform: translateX(0);
-                opacity: 1;
-            }
-        }
-        
-        .element-count {
-            font-size: 14px;
-            color: #666;
-        }
-        
-        .loading {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100%;
-            font-size: 16px;
-            color: #666;
-        }
-        
-        .loading-content {
-            text-align: center;
-        }
-        
-        .loading-content div:first-child {
-            margin-bottom: 10px;
-        }
-        
-        /* Sync Controls Styles */
-        .sync-controls {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .btn-loading {
-            position: relative;
-        }
-
-        .spinner {
-            display: inline-block;
-            width: 12px;
-            height: 12px;
-            border: 2px solid #ffffff40;
-            border-top: 2px solid #ffffff;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin-right: 5px;
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-
-        .sync-status {
-            font-size: 12px;
-            min-width: 100px;
-        }
-
-        .sync-success {
-            color: #4caf50;
-        }
-
-        .sync-error {
-            color: #f44336;
-        }
-
-        .sync-time {
-            color: #666;
-        }
     </style>
-  <script type="module" crossorigin src="./assets/index-BjjBG_Xs.js"></script>
+  <script type="module" crossorigin src="./assets/index-GTq6y6g6.js"></script>
   <link rel="stylesheet" crossorigin href="./assets/index-BRA5OktX.css">
 </head>
 <body>
