@@ -29,7 +29,7 @@
       "versionNonce": 392450555,
       "isDeleted": false,
       "boundElements": null,
-      "updated": 1789212358067,
+      "updated": 1789250081951,
       "link": null,
       "locked": false
     },
@@ -89,8 +89,7 @@
       "boundElements": null,
       "updated": 1789213761153,
       "link": "https://x.com/MarkKnd/status/2082207361276465611",
-      "locked": false,
-      "version": null
+      "locked": false
     },
     {
       "id": "HLZ28wln4dG3g6mECsW7a",
@@ -125,7 +124,37 @@
         1
       ],
       "crop": null,
-      "version": 2
+      "version": 1
+    },
+    {
+      "id": "bXDQiuRSRjJGpX00fOY8_",
+      "type": "embeddable",
+      "x": 707.8522534956528,
+      "y": -92.80315897691685,
+      "width": 1159.7376081112861,
+      "height": 705.4377350736941,
+      "angle": 0,
+      "strokeColor": "transparent",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "opacity": 100,
+      "groupIds": [],
+      "frameId": null,
+      "index": "a9",
+      "roundness": {
+        "type": 3
+      },
+      "seed": 451696902,
+      "version": 169,
+      "versionNonce": 1650065030,
+      "isDeleted": false,
+      "boundElements": null,
+      "updated": 1789250108587,
+      "link": "https://www.youtube.com/watch?v=HDio3J9wkjo",
+      "locked": false
     }
   ],
   "files": {
