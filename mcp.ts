@@ -263,7 +263,7 @@ async function ensureMainBranch(repo: string): Promise<void> {
   if (branches.length !== 0) return;
   const r = await fetch(`${GH_API}/repos/${repo}/contents/README.md`, {
     method: 'PUT', headers: ghHeaders(),
-    body: JSON.stringify({ message: 'Initial commit', content: Buffer.from(`# ${repo.split('/')[1]}\n\nExcalidraw canvas powered by [excalidrop](https://github.com/wtf403/excalidrop).\n`).toString('base64'), branch: 'main' }),
+    body: JSON.stringify({ message: 'Initial commit', content: Buffer.from('').toString('base64'), branch: 'main' }),
   });
   if (!r.ok) throw new Error(`Failed to create main branch: ${await r.text()}`);
 }

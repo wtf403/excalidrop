@@ -864,7 +864,8 @@ export async function checkAccess(ref: RepoRef, token: string): Promise<{ access
   const wanted = `${ref.owner}/${ref.repo}`.toLowerCase();
 
   const inst = await gh('/user/installations?per_page=100', token).catch(() => null);
-  if (inst?.installations && (inst.installations as unknown[]).length > 0) {
+  const hasInstallations = !!inst?.installations && (inst.installations as unknown[]).length > 0;
+  if (hasInstallations) {
     // GitHub App token path: check installation-covered repos
     for (const i of inst.installations || []) {
       const repos = await gh(`/user/installations/${(i as any).id}/repositories?per_page=100`, token).catch(() => null);
@@ -886,15 +887,18 @@ export async function checkAccess(ref: RepoRef, token: string): Promise<{ access
         return { access: 'editor', login, detail: null };
       }
     }
-    return { access: 'denied', login, detail: 'repo-not-covered' };
+    // No installation covers this repo — but the token itself may still have
+    // push (owner/collaborator OAuth scope). Fall through to the repo
+    // permissions check below instead of hard-denying; the caller keeps the
+    // repo-not-covered hint via checkRepoCoverage when it needs the install URL.
   }
 
   const repo = await gh(`/repos/${ref.owner}/${ref.repo}`, token).catch(() => null);
-  if (!repo?.permissions) return { access: 'denied', login, detail: 'no-token-permissions' };
+  if (!repo?.permissions) return { access: 'denied', login, detail: hasInstallations ? 'repo-not-covered' : 'no-token-permissions' };
   if (repo.permissions.push || repo.permissions.admin || repo.permissions.maintain) {
     return { access: 'editor', login, detail: null };
   }
-  return { access: 'viewer', login, detail: null };
+  return { access: 'viewer', login, detail: hasInstallations ? 'repo-not-covered' : null };
 }
 
 
