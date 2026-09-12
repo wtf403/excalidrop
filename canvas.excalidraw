@@ -65,8 +65,8 @@
     {
       "id": "5rV1dGkCVnQYHNvUWPloU",
       "type": "embeddable",
-      "x": 112.42116540327288,
-      "y": 71.79746522182563,
+      "x": 1737.0788463089386,
+      "y": -1099.3935879437072,
       "width": 522.6106444854206,
       "height": 969.5749420772379,
       "angle": 0,
@@ -84,12 +84,13 @@
         "type": 3
       },
       "seed": 676498651,
-      "versionNonce": 270937333,
+      "versionNonce": 2056223841,
       "isDeleted": false,
       "boundElements": null,
-      "updated": 1789212350690,
+      "updated": 1789213761153,
       "link": "https://x.com/MarkKnd/status/2082207361276465611",
-      "locked": false
+      "locked": false,
+      "version": null
     },
     {
       "id": "HLZ28wln4dG3g6mECsW7a",
