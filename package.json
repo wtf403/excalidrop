@@ -73,6 +73,7 @@
   },
   "files": [
     "dist/**/*",
+    "worker/**/*",
     "skills/**/*",
     "*.d.ts",
     "README.md",

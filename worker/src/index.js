@@ -42,6 +42,23 @@ function originAllowed(origin, allowlist) {
 }
 
 export { RelayRoom } from './relay.js';
+import { handleMcp } from './mcp.js';
+
+// Client metadata (CIMD-style discovery) so chat clients can discover the
+// GitHub OAuth endpoints for this MCP server without Dynamic Client
+// Registration. The worker itself never mints tokens — GitHub does.
+function oauthMetadata(host) {
+  return {
+    issuer: 'https://github.com',
+    authorization_endpoint: 'https://github.com/login/oauth/authorize',
+    token_endpoint: 'https://github.com/login/oauth/access_token',
+    response_types_supported: ['code'],
+    grant_types_supported: ['authorization_code', 'refresh_token'],
+    scopes_supported: ['repo', 'read:user'],
+    mcp_endpoint: `https://${host}/mcp`,
+    mcp_protocol_version: '2026-07-28',
+  };
+}
 
 export default {
   async fetch(req, env) {
@@ -55,7 +72,7 @@ export default {
     const originOk = originAllowed(origin, allowed);
     const cors = {
       'Access-Control-Allow-Origin': originOk ? origin : 'null',
-      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization',
       Vary: 'Origin',
     };
@@ -64,6 +81,12 @@ export default {
     const url = new URL(req.url);
     if (req.method === 'GET' && url.pathname === '/health') {
       return json({ ok: true, relay: !!env.RELAY }, 200, cors);
+    }
+    if (url.pathname === '/mcp' || url.pathname === '/mcp/') {
+      return handleMcp(req, env, cors);
+    }
+    if (req.method === 'GET' && url.pathname === '/.well-known/oauth-authorization-server') {
+      return json(oauthMetadata(url.host), 200, cors);
     }
     if (url.pathname === '/relay' || url.pathname.startsWith('/rpc/')) {
       if (!env.RELAY) return json({ error: 'relay not configured (missing durable object binding)' }, 500, cors);

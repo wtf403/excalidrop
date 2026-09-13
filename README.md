@@ -305,6 +305,25 @@ See `skills/excalidraw-skill/SKILL.md` and `skills/excalidraw-skill/references/c
 
 Full schemas are discoverable via `tools/list` or in `skills/excalidraw-skill/references/cheatsheet.md`.
 
+## Remote MCP (ChatGPT, Claude.ai — no install)
+
+One endpoint serves every canvas (stateless, spec `2026-07-28`):
+
+```
+https://excalidrop.wtf403.workers.dev/mcp
+```
+
+1. In your chat client, add a custom MCP connector with the URL above.
+2. Approve GitHub OAuth (`repo` scope — the relay only forwards your token, per request, to the GitHub API).
+3. Call any tool with `{ "repo": "owner/name" }` — e.g. `describe_scene`, `create_element`, `get_canvas_screenshot` (viewer tab must be open for screenshots).
+
+Notes:
+
+- No `?repo=` in the URL: the repo travels per tool call. `switch_remote` sets a per-token default so later calls may omit it; `list_canvases` shows repos you can access.
+- Shared relay quota: 60 calls/min per token, daily budget shared across users (honest `429` with reset time). Heavy use? `npx excalidrop setup owner/repo --relay=self` deploys the relay into your own Cloudflare account (free 100k/day) — then register *its* `/mcp` URL instead.
+- OAuth discovery for clients: `https://excalidrop.wtf403.workers.dev/.well-known/oauth-authorization-server`.
+- Browser login is bounce-free: hosts outside the OAuth callback list redirect through the central login host straight to GitHub (target allowlist-checked, no confirm modal).
+
 ## Testing
 
 ### Status

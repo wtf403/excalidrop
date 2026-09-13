@@ -748,7 +748,6 @@ function App(): JSX.Element {
   const _returnAllowEnv = (import.meta as any).env?.VITE_LOGIN_RETURN_ALLOW as string | undefined
   const LOGIN_RETURN_ALLOW = (_returnAllowEnv || '*.github.io,*.pages.dev').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
   const LOGIN_RETURN_KEY = 'excalidrop_login_return'
-  const [loginReturn, setLoginReturn] = useState<string | null>(null)
   const [tokenInput, setTokenInput] = useState<string>('')
   const [loginBusy, setLoginBusy] = useState<boolean>(false)
 
@@ -809,8 +808,9 @@ function App(): JSX.Element {
   }
 
   // Central-login bounce target: this host completed OAuth for ?login_return=
-  // and must hand the credential back. Consent first — auto-redirecting a
-  // token to an attacker-chosen origin would be a phishing hole.
+  // and must hand the credential back. Redirect straight to GitHub — the
+  // bounce target was allowlist-checked above (*.github.io, *.pages.dev),
+  // so no confirm modal.
   useEffect(() => {
     if (!AUTH_EXCHANGE_URL) return
     const q = new URLSearchParams(window.location.search)
@@ -824,15 +824,11 @@ function App(): JSX.Element {
       return
     }
     try { sessionStorage.setItem(LOGIN_RETURN_KEY, ret) } catch { /* private mode */ }
-    setLoginReturn(ret)
+    void authorizeDirect()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const cancelBounce = (): void => {
-    try { sessionStorage.removeItem(LOGIN_RETURN_KEY) } catch { /* private mode */ }
-    setLoginReturn(null)
-    history.replaceState(null, '', window.location.pathname + window.location.hash)
-  }
+  // (modal removed — bounce auto-redirects to GitHub; allowlist-checked)
 
   // OAuth return: GitHub redirected back with ?code=[&state=]. Exchange via
   // the worker, store the token, scrub the code from the URL. Runs once.
@@ -873,7 +869,6 @@ function App(): JSX.Element {
         const back = sessionStorage.getItem(LOGIN_RETURN_KEY)
         if (back) {
           sessionStorage.removeItem(LOGIN_RETURN_KEY)
-          setLoginReturn(null)
           try {
             let origin = ''
             try { origin = new URL(back).origin } catch { /* invalid */ }
@@ -2046,19 +2041,6 @@ function App(): JSX.Element {
       {toast && (
         <div className="toast" role="status" onClick={() => setToast(null)}>
           <span>{toast}</span>
-        </div>
-      )}
-      {loginReturn && (
-        <div className="login-panel" role="dialog" aria-label="Confirm login return">
-          <div className="login-title">Log in and return?</div>
-          <div className="login-hint">
-            After GitHub login this page hands the token back to <code>{loginReturn}</code>{' '}
-            (in the page address — never sent to a server). Continue only if you recognize it.
-          </div>
-          <div className="login-row">
-            <button className="login-cancel" onClick={cancelBounce}>Cancel</button>
-            <button className="login-save" onClick={() => { void authorizeDirect() }}>Continue to GitHub</button>
-          </div>
         </div>
       )}
       {loginOpen && (

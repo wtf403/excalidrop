@@ -2,6 +2,7 @@
 // ~60s by hash); holds viewer sockets + pending rpc ≤30s. Nothing is persisted.
 
 const AUTH_CACHE_MS = 60_000;
+const AUTH_CACHE_PULL_MS = 600_000;
 const RPC_TIMEOUT_MS = 30_000;
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
 const authCache = new Map();
@@ -24,10 +25,13 @@ function rateOk(key, limit, windowMs) {
 async function verifyRepoAccess(token, repo, needPush) {
   const key = `${hashToken(token)}:${repo}`;
   const cached = authCache.get(key);
-  if (cached && Date.now() - cached.at < AUTH_CACHE_MS) {
-    if (needPush && !cached.push) return { ok: false, status: 403 };
-    if (!cached.pull) return { ok: false, status: 403 };
-    return { ok: true, login: cached.login };
+  if (cached) {
+    const ttl = cached.push ? AUTH_CACHE_MS : AUTH_CACHE_PULL_MS;
+    if (Date.now() - cached.at < ttl) {
+      if (needPush && !cached.push) return { ok: false, status: 403 };
+      if (!cached.pull) return { ok: false, status: 403 };
+      return { ok: true, login: cached.login };
+    }
   }
   const headers = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'excalidrop-relay' };
   const r = await fetch(`https://api.github.com/repos/${repo}`, { headers }).catch(() => null);

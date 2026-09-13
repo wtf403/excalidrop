@@ -12,6 +12,43 @@ const __dirname = path.dirname(__filename);
 const CONFIG_NAME = '.excalidrop.json';
 const MCP_JSON = '.mcp.json';
 const RELAY_DEFAULT = 'https://excalidrop.wtf403.workers.dev';
+const RELAY_MCP_PATH = '/mcp';
+type RelayMode = 'shared' | 'self';
+
+function relayMcpUrl(relayBase: string): string {
+  return `${relayBase.replace(/\/$/, '')}${RELAY_MCP_PATH}`;
+}
+
+// Locate the worker/ source for `setup --relay self` (checkout layout,
+// npm tarball with worker/ shipped, or dist-adjacent copy).
+function workerDir(): string | null {
+  const cands = [
+    path.join(__dirname, 'worker'),
+    path.join(__dirname, '..', 'worker'),
+    path.join(process.cwd(), 'worker'),
+  ];
+  for (const d of cands) {
+    if (fs.existsSync(path.join(d, 'wrangler.toml')) && fs.existsSync(path.join(d, 'src', 'index.js'))) return d;
+  }
+  return null;
+}
+
+// Deploy the relay worker into the USER's own Cloudflare account (their
+// quota). Returns the worker's public URL (parsed from wrangler output).
+function deploySelfRelay(): string {
+  const dir = workerDir();
+  if (!dir) {
+    throw new Error('Worker source not found (expected worker/ next to the package). Clone https://github.com/wtf403/excalidrop and run setup from the checkout, or deploy worker/ manually with `wrangler deploy`.');
+  }
+  const r = runCapture('npx', [...WRANGLER, 'deploy'], dir);
+  const out = r.out || '';
+  if (r.status !== 0) {
+    throw new Error(`wrangler deploy (relay) failed:\n${out.slice(-800)}\nRun \`npx -y wrangler@4 login\` first (or set CLOUDFLARE_API_TOKEN).`);
+  }
+  const m = out.match(/https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev/i);
+  if (!m) throw new Error(`Relay deployed but its URL was not detected in wrangler output. Check \`npx -y wrangler@4 deployments\` and re-run setup with EXCALIDROP_RELAY_URL set.`);
+  return m[0].replace(/\/$/, '');
+}
 const GH_API = 'https://api.github.com';
 const SCENE_PATH = process.env.SCENE_PATH || 'canvas.excalidraw';
 const CANVAS_BRANCH = process.env.CANVAS_BRANCH || 'excalidrop';
@@ -532,9 +569,9 @@ function updateCommand(id: EditorId, repo: string): string {
 type InstallOutcome = 'added' | 'already-current' | 'stale' | 'failed';
 interface InstallResult { id: EditorId; outcome: InstallOutcome; detail: string; }
 
-function runCapture(cmd: string, args: string[]): { status: number | null; out: string } {
+function runCapture(cmd: string, args: string[], cwd?: string): { status: number | null; out: string } {
   try {
-    const r = spawnSync(cmd, args, { encoding: 'utf8' });
+    const r = spawnSync(cmd, args, { encoding: 'utf8', ...(cwd ? { cwd } : {}) });
     return { status: r.status, out: `${r.stdout || ''}\n${r.stderr || ''}` };
   } catch (e) { return { status: 1, out: (e as Error).message }; }
 }
@@ -722,7 +759,7 @@ async function cmdSetup(args: string[], editorOverride?: EditorId[], opts: { fro
   const rawSlug = parseFlag(args, 'repo') || positional || detectSlug();
   const slug = normalizeRepoSlug(rawSlug);
   if (!slug) {
-    console.error(`Usage: npx excalidrop setup ${SLUG_HINT} [--target pages|cloudflare] [--editor claude-project,codex] [--no-prompt]`);
+    console.error(`Usage: npx excalidrop setup ${SLUG_HINT} [--target pages|cloudflare] [--relay shared|self] [--editor claude-project,codex] [--no-prompt]`);
     process.exit(1);
   }
   if (!ghAuthed() && !process.env.GITHUB_TOKEN) {
@@ -791,15 +828,35 @@ async function cmdSetup(args: string[], editorOverride?: EditorId[], opts: { fro
   const appSlug = process.env.EXCALIDROP_APP_SLUG || 'excalidrop';
   console.log(`Note: browser login stays read-only until the Excalidrop app is installed on ${slug}:\n  https://github.com/apps/${appSlug}/installations/new`);
 
+  // Relay: shared by default (free, quota-shared). --relay=self deploys the
+  // relay worker into the user's own Cloudflare account (own 100k/day).
+  const relayFlag = (parseFlag(args, 'relay') || '').toLowerCase();
+  if (relayFlag && relayFlag !== 'shared' && relayFlag !== 'self') {
+    throw new Error(`Unknown --relay value "${relayFlag}". Use --relay shared|self.`);
+  }
+  const relayMode: RelayMode = relayFlag === 'self' ? 'self' : 'shared';
+  let relayUrl = process.env.EXCALIDROP_RELAY_URL || RELAY_DEFAULT;
+  if (relayMode === 'self') {
+    const acct = wranglerAccount();
+    if (!acct.ok) throw new Error('Not logged into Cloudflare (wrangler whoami failed). Run `npx -y wrangler@4 login` first, or set CLOUDFLARE_API_TOKEN.');
+    console.log(`Deploying relay worker to your Cloudflare account (${acct.display})…`);
+    relayUrl = deploySelfRelay();
+    console.log(`Self-hosted relay: ${relayUrl}`);
+  } else {
+    console.log(`Relay: shared (${RELAY_DEFAULT}) — quota-shared; heavy use? Re-run with --relay=self.`);
+  }
+  const mcpUrl = relayMcpUrl(relayUrl);
+  console.log(`\nRemote MCP (register ONCE in any chat client, works for every canvas):\n  ${mcpUrl}\n  Add as a custom MCP connector, approve GitHub OAuth, then call tools with { repo: "owner/name" }.`);
+
   const root = findProjectRoot(process.cwd());
-  fs.writeFileSync(path.join(root, CONFIG_NAME), JSON.stringify({ remote: slug, target, viewerUrl }, null, 2) + '\n');
+  fs.writeFileSync(path.join(root, CONFIG_NAME), JSON.stringify({ remote: slug, target, viewerUrl, relayUrl, relayMode }, null, 2) + '\n');
   const mcpPath = path.join(root, MCP_JSON);
   let mcp: Record<string, any> = {};
   if (fs.existsSync(mcpPath)) {
     try { mcp = JSON.parse(fs.readFileSync(mcpPath, 'utf8')); } catch { console.warn(`Existing ${MCP_JSON} is not valid JSON, leaving it untouched.`); }
   }
   if (!mcp.mcpServers || typeof mcp.mcpServers !== 'object') mcp.mcpServers = {};
-  mcp.mcpServers.excalidrop = { command: 'npx', args: mcpArgs(slug), env: { EXCALIDROP_RELAY_URL: process.env.EXCALIDROP_RELAY_URL || RELAY_DEFAULT } };
+  mcp.mcpServers.excalidrop = { command: 'npx', args: mcpArgs(slug), env: { EXCALIDROP_RELAY_URL: relayUrl } };
   fs.writeFileSync(mcpPath, JSON.stringify(mcp, null, 2) + '\n');
   console.log(`MCP entry written to ${mcpPath}\n`);
 
@@ -1116,7 +1173,7 @@ function printHelp(): void {
 
 Usage:
   npx excalidrop                          interactive setup TUI
-  npx excalidrop setup owner/repo [--target pages|cloudflare] [--editor claude-project,claude-user,codex,cursor,cursor-user,desktop,opencode,opencode-user] [--no-prompt]
+  npx excalidrop setup owner/repo [--target pages|cloudflare] [--relay shared|self] [--editor claude-project,claude-user,codex,cursor,cursor-user,desktop,opencode,opencode-user] [--no-prompt]
   npx -y excalidrop@latest mcp --repo owner/repo   run MCP stdio server (editors use this)
   npx excalidrop login [--repo owner/repo]         GitHub device-flow login
   npx excalidrop publish owner/repo [--target ..]  redeploy viewer only

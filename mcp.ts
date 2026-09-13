@@ -107,9 +107,14 @@ function parseRepo(input: string): string {
 }
 
 function parseRepoFlag(): string | null {
-  const arg = process.argv.find((a) => a.startsWith('--repo='));
-  if (!arg) return null;
-  try { return parseRepo(arg.split('=').slice(1).join('=')); } catch { return null; }
+  const argv = process.argv.slice(2);
+  const eq = argv.find((a) => a.startsWith('--repo='));
+  const raw = eq ? eq.split('=').slice(1).join('=') : (() => {
+    const i = argv.indexOf('--repo');
+    return i !== -1 ? argv[i + 1] : undefined;
+  })();
+  if (!raw) return null;
+  try { return parseRepo(raw); } catch { return null; }
 }
 
 function readConfig(): { remote?: string } {
@@ -307,10 +312,20 @@ function current() {
 
 function scheduleCommit(): void {
   if (commitTimer) clearTimeout(commitTimer);
-  commitTimer = setTimeout(() => { void commitNow('excalidrop: autosync from MCP'); }, 10000);
+  commitTimer = setTimeout(() => { commitTimer = null; void commitNow('excalidrop: autosync from MCP'); }, 10000);
+}
+
+// Flush a pending autosync for the outgoing repo before switching.
+// Prevents committing repo A's edits into repo B via the shared timer.
+async function flushPendingCommit(): Promise<void> {
+  if (!commitTimer) return;
+  clearTimeout(commitTimer);
+  commitTimer = null;
+  await commitNow('excalidrop: autosync from MCP');
 }
 
 async function commitNow(message?: string): Promise<{ sha: string; count: number }> {
+  if (commitTimer) { clearTimeout(commitTimer); commitTimer = null; }
   const { repo, st } = current();
   const doc = () => ({
     type: 'excalidraw', version: 2, source: 'excalidrop',
@@ -976,6 +991,13 @@ async function handleToolCall(request: CallToolRequest) {
         const { target: input } = z.object({ target: z.string().optional() }).parse(args || {});
         if (!input) throw new Error('Remote-only mode: pass { target: "owner/repo" }.');
         const repo = parseRepo(input);
+        if (activeRepo && activeRepo !== repo && commitTimer) {
+          try {
+            await flushPendingCommit();
+          } catch (e) {
+            throw new Error(`Uncommitted edits on ${activeRepo} could not be flushed (${(e as Error).message}). Run commit_scene first, then switch_remote.`);
+          }
+        }
         activeRepo = repo;
         const st = await ensureLoaded(repo);
         persistRepo(repo);
