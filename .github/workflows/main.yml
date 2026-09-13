@@ -76,12 +76,16 @@ jobs:
 
   auto-publish:
     name: Auto-version & Publish trigger
-    # Every push to main ships: pick the next version not yet on NPM, tag it,
-    # and let the tag-triggered run do the actual release + npm publish.
-    # Manual version bumps are respected (tagged as-is when still unpublished).
-    # The version commit carries [skip ci] so this job never loops on itself.
+    # Every push to main ships: pick the next version missing from BOTH npm
+    # and the remote tags, tag it, and let the tag-triggered run do the
+    # actual release + npm publish. Manual version bumps are respected
+    # (tagged as-is when still unpublished).
+    # Loop guard: the version commit message starts with "chore: release v"
+    # and this job skips such pushes. (Do NOT use [skip ci] on the version
+    # commit — GitHub also skips tag pushes pointing at it, which stillborns
+    # the release and wedges this job on the same number forever, cf. v0.2.6.)
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'chore: release v')
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -101,7 +105,10 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           CURRENT=$(node -p "require('./package.json').version")
           VERSION="$CURRENT"
-          while npm view "excalidrop@${VERSION}" version >/dev/null 2>&1; do
+          # Skip numbers already on npm OR already tagged remotely (a tag
+          # whose release never published must not be reused/retagged).
+          while npm view "excalidrop@${VERSION}" version >/dev/null 2>&1 \
+            || git ls-remote --tags origin "refs/tags/v${VERSION}" | grep -q .; do
             VERSION=$(node -e 'const [M, m, p] = process.argv[1].split(".").map(Number); console.log(`${M}.${m}.${p + 1}`);' "$VERSION")
           done
           if [ "$VERSION" != "$CURRENT" ]; then
@@ -117,7 +124,7 @@ jobs:
               fs.writeFileSync("package-lock.json", JSON.stringify(lock, null, 2) + "\n");
             ' "$VERSION"
             git add package.json package-lock.json
-            git commit -m "chore: release v${VERSION} [skip ci]"
+            git commit -m "chore: release v${VERSION}"
             git pull --rebase origin main
           fi
           git tag "v${VERSION}"
