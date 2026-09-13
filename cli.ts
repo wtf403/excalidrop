@@ -861,7 +861,33 @@ async function runTui(): Promise<void> {
     });
     if (clack.isCancel(how)) { clack.cancel('Aborted.'); process.exit(0); }
     if (how === 'device') {
-      const s = clack.spinner();
+  // Local git origin: later git/diag commands resolve the canvas repo through
+  // it, so offer to set it when missing or pointing elsewhere.
+  try {
+    const top = spawnSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' });
+    if (top.status === 0) {
+      const cur = spawnSync('git', ['remote', 'get-url', 'origin'], { encoding: 'utf8' });
+      const curSlug = cur.status === 0 ? normalizeRepoSlug(cur.stdout) : '';
+      if (curSlug !== slug) {
+        const ok = await clack.confirm({
+          message: cur.status !== 0
+            ? `No git origin here — set it to ${slug}?`
+            : `git origin points at ${curSlug || 'unknown'} — repoint to ${slug}?`,
+        });
+        if (clack.isCancel(ok)) { clack.cancel('Aborted.'); process.exit(0); }
+        if (ok) {
+          const url = `https://github.com/${slug}.git`;
+          const r = cur.status !== 0
+            ? spawnSync('git', ['remote', 'add', 'origin', url], { encoding: 'utf8' })
+            : spawnSync('git', ['remote', 'set-url', 'origin', url], { encoding: 'utf8' });
+          if (r.status === 0) clack.log.success(`git origin → ${url}`);
+          else clack.log.warn(`Could not set git origin — run manually: \`git remote add origin ${url}\``);
+        }
+      }
+    }
+  } catch { /* git unavailable — skip silently */ }
+
+  const s = clack.spinner();
       s.start('Waiting for browser approval…');
       try { await cmdLogin(); s.stop('Logged in.'); }
       catch (e) { s.stop('Login failed: ' + (e as Error).message); process.exit(1); }
