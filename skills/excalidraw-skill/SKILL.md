@@ -17,7 +17,7 @@ Two modes are available. Try MCP first — it has more capabilities.
 > The remote canvas isn't set up. To set up:
 > 1. `gh auth login` (or `npx excalidrop login`)
 > 2. `npx excalidrop setup owner/repo` (picks Pages for public, Cloudflare for private)
-> 3. `claude mcp add excalidrop --scope project -- npx -y excalidrop@latest mcp --repo owner/repo`
+> 3. `claude mcp add excalidrop --scope project -- npx --prefix ~/.excalidrop-npx -y excalidrop@latest mcp --repo owner/repo`
 > 4. Open the printed canvas URL once (screenshots/viewport need one viewer tab open)
 
 ### MCP vs Skill Scripts Quick Reference

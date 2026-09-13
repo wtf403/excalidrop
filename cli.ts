@@ -444,15 +444,41 @@ function findProjectRoot(cwd: string): string {
   return path.resolve(cwd);
 }
 
+// Neutral npx prefix dir (home-owned, survives reboots unlike tmp). Created
+// by setup before any entry is written; npx installs excalidrop@latest under
+// it once and reuses it. If the user wipes it, setup re-creates it
+// idempotently (npx needs the dir itself to exist).
+const NPX_PREFIX = path.join(os.homedir(), '.excalidrop-npx');
+
+function ensureNpxPrefix(): void {
+  try {
+    fs.mkdirSync(NPX_PREFIX, { recursive: true });
+  } catch { /* spawn will surface real errors */ }
+}
+
 function mcpArgs(repo: string): string[] {
-  return ['-y', 'excalidrop@latest', 'mcp', '--repo', repo];
+  // --prefix isolates the npx install from the caller's project: when an
+  // editor spawns this from inside a checkout whose package.json is ALSO
+  // named excalidrop at a satisfying version, bare `npx -y excalidrop@latest`
+  // resolves to the local (possibly bin-less/stale) tree and dies with
+  // "command not found". A neutral prefix forces the registry fetch.
+  return ['--prefix', NPX_PREFIX, '-y', 'excalidrop@latest', 'mcp', '--repo', repo];
+}
+
+// Quote one argv element for display/manual-run strings (arrays stay raw).
+function shellQuote(a: string): string {
+  return /[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a;
+}
+
+function mcpArgsDisplay(repo: string): string {
+  return mcpArgs(repo).map(shellQuote).join(' ');
 }
 
 const EDITOR_IDS = ['claude-project', 'claude-user', 'codex', 'cursor', 'cursor-user', 'desktop', 'opencode', 'opencode-user'] as const;
 type EditorId = (typeof EDITOR_IDS)[number];
 
 function editorCommand(id: EditorId, repo: string): string {
-  const a = mcpArgs(repo).join(' ');
+  const a = mcpArgsDisplay(repo);
   switch (id) {
     case 'claude-project': return `claude mcp add excalidrop --scope project -- npx ${a}`;
     case 'claude-user': return `claude mcp add excalidrop --scope user -- npx ${a}`;
@@ -513,49 +539,54 @@ function repoFromArgs(args: unknown): string | null {
   return typeof v === 'string' && v.includes('/') ? v.toLowerCase() : null;
 }
 
-// {present, repo} for a JSON MCP config (claude/cursor/desktop/opencode shapes).
-function jsonMcpRepo(file: string, key: 'mcpServers' | 'mcp'): { present: boolean; repo: string | null } {
+// Modern entries carry --prefix (registry fetch isolated from the caller's
+// project). Entries without it die with "command not found" when spawned
+// from inside an excalidrop checkout at a satisfying version.
+function hasNpxPrefix(args: unknown): boolean {
+  return Array.isArray(args) && args.includes('--prefix');
+}
+
+// {present, repo, modern} for a JSON MCP config (claude/cursor/desktop/opencode shapes).
+function jsonMcpRepo(file: string, key: 'mcpServers' | 'mcp'): { present: boolean; repo: string | null; modern: boolean } {
   let j: any;
   try {
     j = JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch { return { present: false, repo: null }; }
+  } catch { return { present: false, repo: null, modern: false }; }
   const e = key === 'mcpServers' ? j?.mcpServers?.excalidrop : j?.mcp?.excalidrop;
-  if (!e) return { present: false, repo: null };
-  if (Array.isArray(e.command)) return { present: true, repo: repoFromArgs(e.command) };
-  if (e.command === 'npx' && Array.isArray(e.args)) return { present: true, repo: repoFromArgs(e.args) };
-  return { present: true, repo: null };
+  if (!e) return { present: false, repo: null, modern: false };
+  if (Array.isArray(e.command)) return { present: true, repo: repoFromArgs(e.command), modern: hasNpxPrefix(e.command) };
+  if (e.command === 'npx' && Array.isArray(e.args)) return { present: true, repo: repoFromArgs(e.args), modern: hasNpxPrefix(e.args) };
+  return { present: true, repo: null, modern: false };
 }
 
-// {present, repo} for Codex's TOML config — crude section parse, no new deps.
-function codexMcpRepo(): { present: boolean; repo: string | null } {
+// {present, repo, modern} for Codex's TOML config — crude section parse, no new deps.
+function codexMcpRepo(): { present: boolean; repo: string | null; modern: boolean } {
   let txt: string;
   try {
     txt = fs.readFileSync(path.join(os.homedir(), '.codex', 'config.toml'), 'utf8');
-  } catch { return { present: false, repo: null }; }
+  } catch { return { present: false, repo: null, modern: false }; }
   const sec = txt.match(/\[mcp_servers\.excalidrop\]([\s\S]*?)(?=^\[|\z)/m);
-  if (!sec) return { present: false, repo: null };
+  if (!sec) return { present: false, repo: null, modern: false };
   const m = (sec[1] ?? '').match(/--repo["'\s=,]+([A-Za-z0-9_.\-]+\/[A-Za-z0-9_.\-]+)/);
-  return { present: true, repo: m?.[1]?.toLowerCase() ?? null };
+  return { present: true, repo: m?.[1]?.toLowerCase() ?? null, modern: /--prefix["'\s=]/.test(sec[1] ?? '') };
 }
 
-export type EditorStatus = { status: 'current' | 'stale' | 'missing'; repo: string | null; where: string };
+export type EditorStatus = { status: 'current' | 'stale' | 'missing'; repo: string | null; where: string; outdatedForm?: boolean };
 
 function detectEditorState(id: EditorId, repo: string, root: string): EditorStatus {
   const want = repo.toLowerCase();
   if (id === 'codex') {
     const s = codexMcpRepo();
     if (!s.present) return { status: 'missing', repo: null, where: '~/.codex/config.toml' };
-    return s.repo === want
-      ? { status: 'current', repo: s.repo, where: '~/.codex/config.toml' }
-      : { status: 'stale', repo: s.repo, where: '~/.codex/config.toml' };
+    if (s.repo === want && s.modern) return { status: 'current', repo: s.repo, where: '~/.codex/config.toml' };
+    return { status: 'stale', repo: s.repo, where: '~/.codex/config.toml', outdatedForm: s.repo === want && !s.modern };
   }
   const f = editorFile(id, root)!;
   const where = shortenHome(f.path);
   const s = jsonMcpRepo(f.path, f.key);
   if (!s.present) return { status: 'missing', repo: null, where };
-  return s.repo === want
-    ? { status: 'current', repo: s.repo, where }
-    : { status: 'stale', repo: s.repo, where };
+  if (s.repo === want && s.modern) return { status: 'current', repo: s.repo, where };
+  return { status: 'stale', repo: s.repo, where, outdatedForm: s.repo === want && !s.modern };
 }
 
 function updateCommand(id: EditorId, repo: string): string {
@@ -618,7 +649,9 @@ function installEditor(id: EditorId, repo: string, root: string): InstallResult 
   // leave a stale one — report it with the exact update command.
   const st = detectEditorState(id, repo, root);
   if (st.status === 'current') return { id, outcome: 'already-current', detail: `${st.where} already points at ${repo}` };
-  const staleNote = st.status === 'stale' ? ` (currently → ${st.repo ?? 'unknown'})` : '';
+  const staleNote = st.status === 'stale'
+    ? (st.outdatedForm ? ' (outdated npx form — needs --prefix)' : ` (currently → ${st.repo ?? 'unknown'})`)
+    : '';
 
   if (id === 'claude-project' || id === 'claude-user' || id === 'codex') {
     const bin = id === 'codex' ? 'codex' : 'claude';
@@ -638,7 +671,8 @@ function installEditor(id: EditorId, repo: string, root: string): InstallResult 
       // honestly whether the existing entry is current or stale.
       const now = detectEditorState(id, repo, root);
       if (now.status === 'current') return { id, outcome: 'already-current', detail: `${now.where} already points at ${repo}` };
-      return { id, outcome: 'stale', detail: `already exists${now.repo ? ` → ${now.repo}` : ''} — not updated. Run:\n${updateCommand(id, repo)}` };
+      const why = now.outdatedForm ? 'outdated npx form (missing --prefix)' : `→ ${now.repo ?? 'unknown'}`;
+      return { id, outcome: 'stale', detail: `already exists (${why}) — not updated. Run:\n${updateCommand(id, repo)}` };
     }
     return fail((r.out.trim() || `${bin} exited ${r.status}`).slice(0, 300));
   }
@@ -687,11 +721,21 @@ const HARNESS_LABELS: Record<Harness, string> = {
 
 // One-line install-state summary for the harness picker, e.g.
 // "user: installed, project: —" or "installed → other/repo".
+// Same-repo entries in the old npx form show as "outdated entry".
+function stateHint(st: EditorStatus): string | undefined {
+  if (st.status === 'current') return 'installed';
+  if (st.status !== 'stale') return undefined;
+  if (st.outdatedForm) return 'outdated entry (old npx form)';
+  return `installed → ${st.repo ?? 'unknown'}`;
+}
+
 function harnessSummary(h: Harness, slug: string, root: string): string {
   const ids = HARNESS_EDITORS[h];
   const parts = ids.map((id) => {
     const st = detectEditorState(id, slug, root);
-    const cur = st.status === 'current' ? 'installed' : st.status === 'stale' ? `installed → ${st.repo ?? 'unknown'}` : '—';
+    const cur = st.status === 'current' ? 'installed' : st.status === 'stale'
+      ? (st.outdatedForm ? 'outdated entry' : `installed → ${st.repo ?? 'unknown'}`)
+      : '—';
     return ids.length > 1 ? `${editorScope(id)}: ${cur}` : cur;
   });
   return parts.join(', ');
@@ -703,7 +747,7 @@ function scopeOption(id: EditorId, slug: string, root: string): { value: string;
   return {
     value: id,
     label: editorTarget(id, root),
-    hint: st.status === 'current' ? 'installed' : st.status === 'stale' ? `installed → ${st.repo ?? 'unknown'}` : undefined,
+    hint: stateHint(st),
   };
 }
 
@@ -766,6 +810,9 @@ async function cmdSetup(args: string[], editorOverride?: EditorId[], opts: { fro
     console.error('Not logged in to GitHub. Run `gh auth login` or `npx excalidrop login` first.');
     process.exit(1);
   }
+  // Editor entries spawn npx under this prefix — make sure it exists now so
+  // the first post-setup spawn doesn't fail on a missing dir.
+  ensureNpxPrefix();
   try {
     await ghGet(`/repos/${slug}`);
   } catch (e) {
@@ -1107,14 +1154,17 @@ async function runTui(): Promise<void> {
 
   // Stale Claude entries can't be overwritten by `add` (it exits 0 with
   // "already exists" and changes nothing) — offer an explicit repoint before
-  // the deploy phase so the install below actually lands.
+  // the deploy phase so the install below actually lands. Same-repo entries
+  // in the old npx form count as stale too (they break when spawned from
+  // inside an excalidrop checkout).
   for (const id of editors) {
     if (id !== 'claude-user' && id !== 'claude-project') continue;
     const st = detectEditorState(id, slug, projectRoot);
     if (st.status !== 'stale') continue;
-    const ok = await clack.confirm({
-      message: `${EDITOR_LABELS[id]} points at ${st.repo ?? 'unknown'} — repoint to ${slug}?`,
-    });
+    const what = st.outdatedForm
+      ? `${EDITOR_LABELS[id]} uses the old npx form (breaks inside excalidrop checkouts) — rewrite it for ${slug}?`
+      : `${EDITOR_LABELS[id]} points at ${st.repo ?? 'unknown'} — repoint to ${slug}?`;
+    const ok = await clack.confirm({ message: what });
     if (clack.isCancel(ok)) { clack.cancel('Aborted.'); process.exit(0); }
     if (ok) {
       const scope = id === 'claude-project' ? 'project' : 'user';
@@ -1174,7 +1224,7 @@ function printHelp(): void {
 Usage:
   npx excalidrop                          interactive setup TUI
   npx excalidrop setup owner/repo [--target pages|cloudflare] [--relay shared|self] [--editor claude-project,claude-user,codex,cursor,cursor-user,desktop,opencode,opencode-user] [--no-prompt]
-  npx -y excalidrop@latest mcp --repo owner/repo   run MCP stdio server (editors use this)
+  npx --prefix ~/.excalidrop-npx -y excalidrop@latest mcp --repo owner/repo   run MCP stdio server (editors use this)
   npx excalidrop login [--repo owner/repo]         GitHub device-flow login
   npx excalidrop publish owner/repo [--target ..]  redeploy viewer only
   npx excalidrop status                   show repo + auth + scene
@@ -1204,7 +1254,7 @@ async function main(): Promise<void> {
       console.log('Add excalidrop to your AI agent (no install, always latest):\n');
       for (const id of ids) {
         const st = repo.includes('/') ? detectEditorState(id, repo, root) : null;
-        const mark = st?.status === 'current' ? ' (installed)' : st?.status === 'stale' ? ` (installed → ${st.repo ?? 'unknown'})` : '';
+        const mark = st?.status === 'current' ? ' (installed)' : st?.status === 'stale' ? (st.outdatedForm ? ' (outdated npx form)' : ` (installed → ${st.repo ?? 'unknown'})`) : '';
         console.log(`## ${EDITOR_LABELS[id]} → ${editorTarget(id, root)}${mark}\n${editorCommand(id, repo)}\n`);
       }
       break;

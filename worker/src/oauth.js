@@ -115,6 +115,13 @@ export async function handleOAuth(req, env, cors) {
     }), { status: 201, headers: { 'Content-Type': 'application/json', ...cors } });
   }
 
+  // Where the GitHub leg of the MCP flow returns. Default is the shared
+// central viewer (the one callback URL the shared OAuth App knows); self-host
+// operators point this at their own viewer deployment.
+function viewerCallback(env) {
+  return env.OAUTH_VIEWER_CALLBACK || 'https://wtf403.github.io/excalidrop/';
+}
+
   // ---- Authorize: validate, stash session, bounce to GitHub
   if (url.pathname === '/authorize') {
     if (req.method !== 'GET') return err(405, 'invalid_request', 'use GET', cors);
@@ -130,15 +137,21 @@ export async function handleOAuth(req, env, cors) {
     const method = q.get('code_challenge_method') || 'plain';
     if (q.get('code_challenge') && method !== 'S256' && method !== 'plain') return err(400, 'invalid_request', 'code_challenge_method must be S256 or plain', cors);
     const sid = rnd('excsess_');
+    // GitHub must return the code to a URL registered on the OAuth App. The
+    // worker's own /oauth/callback is only registered on apps whose owner
+    // added it — otherwise bounce through the registered viewer host, whose
+    // bundle forwards ?code&state=excsess_* straight back to /oauth/callback.
+    // The exact URI used here is stored and echoed at exchange time.
+    const gh_redirect = viewerCallback(env);
     await kv.put(`oauth:session:${sid}`, JSON.stringify({
       client_id: q.get('client_id'), redirect_uri,
       scope: String(q.get('scope') || 'repo').slice(0, 200),
       challenge: q.get('code_challenge') || null, challenge_method: method,
-      client_state: q.get('state') || '',
+      client_state: q.get('state') || '', gh_redirect,
     }), { expirationTtl: 600 });
     const gh = new URL('https://github.com/login/oauth/authorize');
     gh.searchParams.set('client_id', app.id);
-    gh.searchParams.set('redirect_uri', origin + '/oauth/callback');
+    gh.searchParams.set('redirect_uri', gh_redirect);
     gh.searchParams.set('scope', 'repo');
     gh.searchParams.set('state', sid);
     return new Response(null, { status: 302, headers: { Location: gh.toString(), ...cors } });
@@ -151,12 +164,14 @@ export async function handleOAuth(req, env, cors) {
     const rawSess = q.get('state') ? await kv.get(`oauth:session:${q.get('state')}`) : null;
     if (!rawSess || !q.get('code')) return err(400, 'invalid_request', 'unknown or expired session (restart login)', cors);
     const sess = JSON.parse(rawSess);
+    // redirect_uri must exactly match the authorize leg (stored per session).
+    const gh_redirect = sess.gh_redirect || (origin + '/oauth/callback');
     const r = await fetch('https://github.com/login/oauth/access_token', {
       method: 'POST',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
       body: JSON.stringify({
         client_id: appCreds(env).id, client_secret: appCreds(env).secret,
-        code: q.get('code'), redirect_uri: origin + '/oauth/callback',
+        code: q.get('code'), redirect_uri: gh_redirect,
       }),
     }).catch(() => null);
     const j = await r?.json().catch(() => null);

@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
 // excalidrop MCP server — single file, remote-only (GitHub is the canvas).
-// Usage: npx -y excalidrop@latest mcp --repo owner/repo
+// Usage: npx --prefix ~/.excalidrop-npx -y excalidrop@latest mcp --repo owner/repo
+// (--prefix keeps npx from resolving a same-named local checkout instead of
+// the registry when spawned from inside the excalidrop repo itself.)
 
 process.env.NODE_DISABLE_COLORS = '1';
 process.env.NO_COLOR = '1';

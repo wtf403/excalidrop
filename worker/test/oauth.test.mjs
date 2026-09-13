@@ -19,11 +19,16 @@ function makeKv() {
 }
 const GITHUB_CODE = 'gh_code_abc';
 const GITHUB_TOKEN = 'ghu_test123';
+// Records the last exchange body so tests can assert which redirect_uri the
+// worker used for the GitHub leg (must match the authorize leg exactly).
+let lastExchange = null;
+let acceptedSecret = 'TEST_SECRET';
 globalThis.fetch = async (url, init = {}) => {
   const u = String(url);
   if (u === 'https://github.com/login/oauth/access_token') {
     const body = JSON.parse(init.body);
-    if (body.code === GITHUB_CODE && body.client_secret === 'TEST_SECRET') {
+    lastExchange = body;
+    if (body.code === GITHUB_CODE && body.client_secret === acceptedSecret) {
       return Response.json({ access_token: GITHUB_TOKEN, scope: 'repo', token_type: 'bearer' });
     }
     return Response.json({ error: 'bad_verification_code' }, { status: 200 });
@@ -81,7 +86,7 @@ const CHALLENGE = createHash('sha256').update(VERIFIER).digest('base64url');
   const loc = new URL(ok.headers.get('location'));
   check(loc.hostname === 'github.com' && loc.pathname === '/login/oauth/authorize', 'authorize target is github');
   check(loc.searchParams.get('client_id') === 'TEST_APP_ID', 'authorize uses app client_id (secret stays server-side)');
-  check(loc.searchParams.get('redirect_uri') === HOST + '/oauth/callback', 'authorize callback is worker endpoint');
+  check(loc.searchParams.get('redirect_uri') === 'https://wtf403.github.io/excalidrop/', 'authorize callback is the registered viewer host (forwarder)');
   check(loc.searchParams.get('scope') === 'repo', 'authorize requests repo scope');
   check(!!loc.searchParams.get('state'), 'authorize carries session state');
   var SESSION = loc.searchParams.get('state');
@@ -140,6 +145,33 @@ const CHALLENGE = createHash('sha256').update(VERIFIER).digest('base64url');
   const auth = await handleOAuth(new Request(HOST + `/authorize?response_type=code&client_id=${cid}&redirect_uri=${encodeURIComponent('https://app.example/cb')}`), env2, {});
   const loc = new URL(auth.headers.get('location'));
   check(loc.searchParams.get('client_id') === 'OWN_APP', 'authorize prefers MCP_GITHUB_CLIENT_ID over shared id');
+}
+
+// 10. central-forwarder: GitHub leg uses the registered viewer callback, and
+// the exchange echoes the same redirect_uri (GitHub requires exact match).
+const VIEWER_CB = 'https://viewer.example.test/';
+{
+  const env3 = { ...env, OAUTH: makeKv(), OAUTH_VIEWER_CALLBACK: VIEWER_CB };
+  const call3 = (path, opts = {}) => handleOAuth(new Request(HOST + path, opts), env3, {});
+  const reg = await call3('/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ redirect_uris: ['https://app.example/cb'] }) });
+  const cid = (await reg.json()).client_id;
+  const auth = await call3(`/authorize?response_type=code&client_id=${cid}&redirect_uri=${encodeURIComponent('https://app.example/cb')}&state=c1`);
+  const loc = new URL(auth.headers.get('location'));
+  check(loc.searchParams.get('redirect_uri') === VIEWER_CB, 'authorize points GitHub at the viewer callback, not the worker');
+  const sid = loc.searchParams.get('state');
+  lastExchange = null;
+  const cb = await call3(`/oauth/callback?code=${GITHUB_CODE}&state=${sid}`);
+  check(cb.status === 302, 'viewer-callback flow completes');
+  check(lastExchange && lastExchange.redirect_uri === VIEWER_CB, 'exchange uses the same viewer redirect_uri (exact match)');
+  const back = new URL(cb.headers.get('location'));
+  check(back.origin === 'https://app.example' && !!back.searchParams.get('code'), 'client still gets its code at its own redirect');
+}
+// 11. default (no OAUTH_VIEWER_CALLBACK): GitHub leg is the shared central
+// viewer (the callback URL the shared app actually has registered).
+{
+  const auth = await call(`/authorize?response_type=code&client_id=${CLIENT.client_id}&redirect_uri=${encodeURIComponent('https://app.example/cb')}&state=d1`);
+  const loc = new URL(auth.headers.get('location'));
+  check(loc.searchParams.get('redirect_uri') === 'https://wtf403.github.io/excalidrop/', 'default GitHub leg is the registered central viewer');
 }
 
 console.log(failures.length ? `\n${failures.length} FAILURES` : '\nALL GREEN');

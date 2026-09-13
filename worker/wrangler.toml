@@ -6,6 +6,11 @@ compatibility_date = "2024-01-01"
 #   wrangler secret put GITHUB_CLIENT_SECRET
 [vars]
 GITHUB_CLIENT_ID = "Iv23liuS2fx3QOEIoDmx"
+# Viewer host the MCP OAuth flow bounces through. Must be registered as an
+# Authorization callback URL on the GitHub OAuth App (default: the shared
+# central viewer). Self-host operators serving their own viewer set this to
+# their viewer origin (trailing slash) instead of registering the worker.
+OAUTH_VIEWER_CALLBACK = "https://wtf403.github.io/excalidrop/"
 # Comma-separated allowed canvas origins: exact ("https://wtf403.github.io")
 # or "*.github.io"-style suffixes so one deployment serves every publisher.
 # Add "*.pages.dev" + your custom domain when hosting private viewers on Cloudflare.

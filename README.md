@@ -41,7 +41,7 @@ Keywords: Excalidraw agent skill, Excalidraw MCP server, AI diagramming, Claude 
 Remote-only: GitHub is the canvas. No local server, no ports.
 
 - Viewer: static Excalidraw app on GitHub Pages (public repos) or Cloudflare Pages (private repos), reads `canvas.excalidraw` from the `excalidrop` branch
-- MCP server: remote-only stdio (`npx -y excalidrop@latest mcp --repo owner/repo`); draws via GitHub Contents API, screenshots via shared relay when a viewer tab is open
+- MCP server: remote-only stdio (`npx --prefix ~/.excalidrop-npx -y excalidrop@latest mcp --repo owner/repo` — the `--prefix` keeps npx from resolving a same-named local checkout instead of the registry); draws via GitHub Contents API, screenshots via shared relay when a viewer tab is open
 
 ## How We Differ from the Official Excalidraw MCP
 
@@ -85,8 +85,8 @@ npx excalidrop setup owner/repo [--target pages|cloudflare]
 No install needed — editors run the MCP straight from npm:
 
 ```bash
-claude mcp add excalidrop --scope project -- npx -y excalidrop@latest mcp --repo owner/repo
-codex mcp add excalidrop -- npx -y excalidrop@latest mcp --repo owner/repo
+claude mcp add excalidrop --scope project -- npx --prefix ~/.excalidrop-npx -y excalidrop@latest mcp --repo owner/repo
+codex mcp add excalidrop -- npx --prefix ~/.excalidrop-npx -y excalidrop@latest mcp --repo owner/repo
 ```
 
 Screenshots / viewport / mermaid need one viewer tab open (shared relay at `excalidrop.wtf403.workers.dev`); drawing works headless.
@@ -148,9 +148,9 @@ Config location:
 
 ```bash
 # Project-level (shared via .mcp.json — written automatically by setup):
-claude mcp add excalidrop --scope project -- npx -y excalidrop@latest mcp --repo owner/repo
+claude mcp add excalidrop --scope project -- npx --prefix ~/.excalidrop-npx -y excalidrop@latest mcp --repo owner/repo
 # User-level (all projects):
-claude mcp add excalidrop --scope user -- npx -y excalidrop@latest mcp --repo owner/repo
+claude mcp add excalidrop --scope user -- npx --prefix ~/.excalidrop-npx -y excalidrop@latest mcp --repo owner/repo
 ```
 
 **Manage servers:**
@@ -181,7 +181,7 @@ Config location: `.cursor/mcp.json` in your project root (or `~/.cursor/mcp.json
 ### Codex CLI
 
 ```bash
-codex mcp add excalidrop -- npx -y excalidrop@latest mcp --repo owner/repo
+codex mcp add excalidrop -- npx --prefix ~/.excalidrop-npx -y excalidrop@latest mcp --repo owner/repo
 ```
 
 **Manage servers:**

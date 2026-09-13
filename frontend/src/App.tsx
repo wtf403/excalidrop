@@ -844,6 +844,16 @@ function App(): JSX.Element {
     }
     oauthHandledRef.current = true
     const state = q.get('state')
+    // MCP-connector flow (worker AS): GitHub bounced the code HERE because
+    // this host is the registered OAuth callback — the worker session that
+    // owns it is excsess_*, while viewer sessions are hex. Hand the query
+    // straight to the worker, which swaps the code and redirects to the chat
+    // client. No token ever touches viewer storage on this path; unknown or
+    // replayed sessions get a plain 400 from the worker (safe to retry).
+    if (state && state.startsWith('excsess_')) {
+      window.location.href = `${AUTH_EXCHANGE_URL}/oauth/callback${window.location.search}`
+      return
+    }
     void (async () => {
       try {
         const expected = sessionStorage.getItem(OAUTH_STATE_KEY)
