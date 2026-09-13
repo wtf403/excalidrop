@@ -220,11 +220,22 @@ export function getAddLibraryUrls(): string[] {
 }
 
 export function getToken(): string | null {
-  const t = parseHashParams().get('token');
+  const p = parseHashParams();
+  const t = p.get('token');
   if (t) {
-    localStorage.setItem(TOKEN_KEY, t);
-    // Keep addLibrary (not yet consumed) so the library effect can read it.
-    removeHashParams('token');
+    // Central-login handoff may carry the full credential set in the hash
+    // (#token=..&refresh_token=..&expires_in=..) — persist all of it so
+    // silent refresh keeps working, then scrub secrets from the URL.
+    const rt = p.get('refresh_token');
+    const exp = Number(p.get('expires_in'));
+    if (rt || Number.isFinite(exp)) {
+      setToken(t, rt || null, Number.isFinite(exp) ? exp : null);
+      removeHashParams('token', 'refresh_token', 'expires_in');
+    } else {
+      localStorage.setItem(TOKEN_KEY, t);
+      // Keep addLibrary (not yet consumed) so the library effect can read it.
+      removeHashParams('token');
+    }
     return t;
   }
   return getStoredToken()?.token ?? null;

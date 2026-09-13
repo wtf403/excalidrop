@@ -100,7 +100,7 @@ Flipping repo visibility doesn't move canvas data (it stays on the `excalidrop` 
 1. `gh repo edit owner/repo --visibility private` (or repo Settings).
 2. `npx excalidrop setup owner/repo --target cloudflare` (needs `wrangler login` once). New URL: `https://excalidrop-owner-repo.pages.dev/` (repo slug is baked into the viewer build at deploy time, no `?repo=` needed).
 3. Anonymous viewing ends: private scenes need a token, so every viewer must log in and the Excalidrop app must be installed on the repo.
-4. Add the new `https://<project>.pages.dev/` callback URL in your GitHub App / OAuth App settings (exact match).
+4. No OAuth callback registration needed: Cloudflare viewers bounce login through the central host (`https://wtf403.github.io/excalidrop/`, overridable via `VITE_CENTRAL_LOGIN_HOST`), which hands the token back via the address hash. (If you self-host with `VITE_CENTRAL_LOGIN_HOST=off`, register `https://<project>.pages.dev/` as an exact callback URL instead.)
 5. The old `owner.github.io/repo` URL 404s — optionally disable Pages (Settings → Pages) to avoid confusion.
 
 **Private → public:**

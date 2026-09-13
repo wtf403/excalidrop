@@ -734,29 +734,104 @@ function App(): JSX.Element {
     : (_exchangeEnv || 'https://excalidrop.wtf403.workers.dev')
   const OAUTH_STATE_KEY = 'excalidrop_oauth_state'
   const OAUTH_REDIRECT_KEY = 'excalidrop_oauth_redirect'
+  // Central login host: one permanently-registered OAuth callback that other
+  // viewer hosts bounce through. Direct authorize uses redirect_uri = this
+  // origin, which GitHub rejects for hosts outside the app's callback list
+  // (every new *.pages.dev project). The central host completes OAuth and
+  // hands the credential back via #token= (hash never hits the network).
+  // 'off'/'' restores always-direct (self-hosters with their own callback).
+  const _loginHostEnv = (import.meta as any).env?.VITE_CENTRAL_LOGIN_HOST as string | undefined
+  const CENTRAL_LOGIN_HOST = (_loginHostEnv === 'off' || _loginHostEnv === '') ? undefined
+    : (_loginHostEnv || 'https://wtf403.github.io/excalidrop/')
+  // Origins allowed as bounce targets, both directions. Suffix match so one
+  // deployment serves every publisher without registering each URL.
+  const _returnAllowEnv = (import.meta as any).env?.VITE_LOGIN_RETURN_ALLOW as string | undefined
+  const LOGIN_RETURN_ALLOW = (_returnAllowEnv || '*.github.io,*.pages.dev').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
+  const LOGIN_RETURN_KEY = 'excalidrop_login_return'
+  const [loginReturn, setLoginReturn] = useState<string | null>(null)
   const [tokenInput, setTokenInput] = useState<string>('')
   const [loginBusy, setLoginBusy] = useState<boolean>(false)
+
+  /** Suffix-match a return origin against the bounce allowlist. */
+  const returnOriginAllowed = (origin: string): boolean => {
+    if (!origin.startsWith('https://')) return false
+    let host = ''
+    try { host = new URL(origin).host.toLowerCase() } catch { return false }
+    return LOGIN_RETURN_ALLOW.some((e) => {
+      if (!e) return false
+      if (e.startsWith('*.')) return host === e.slice(2) || host.endsWith(e.slice(1))
+      try { return new URL(e).origin.toLowerCase() === origin.toLowerCase() } catch { return e === host }
+    })
+  }
+
+  /** Direct GitHub OAuth round-trip with redirect back to THIS page. */
+  const authorizeDirect = async (): Promise<void> => {
+    const gh = await import('./utils/ghSync')
+    const redirect_uri = window.location.origin + window.location.pathname
+    const bytes = new Uint8Array(16)
+    crypto.getRandomValues(bytes)
+    const state = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('')
+    try {
+      sessionStorage.setItem(OAUTH_STATE_KEY, state)
+      sessionStorage.setItem(OAUTH_REDIRECT_KEY, redirect_uri)
+    } catch { /* private mode — state check skipped on return */ }
+    const q = new URLSearchParams({ client_id: gh.CLIENT_ID, redirect_uri, scope: 'repo', state })
+    window.location.href = `https://github.com/login/oauth/authorize?${q}`
+  }
 
   const startLogin = (): void => {
     setLoginError(null)
     if (AUTH_EXCHANGE_URL) {
-      void (async () => {
-        const gh = await import('./utils/ghSync')
-        const redirect_uri = window.location.origin + window.location.pathname
-        const bytes = new Uint8Array(16)
-        crypto.getRandomValues(bytes)
-        const state = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('')
-        try {
-          sessionStorage.setItem(OAUTH_STATE_KEY, state)
-          sessionStorage.setItem(OAUTH_REDIRECT_KEY, redirect_uri)
-        } catch { /* private mode — state check skipped on return */ }
-        const q = new URLSearchParams({ client_id: gh.CLIENT_ID, redirect_uri, scope: 'repo', state })
-        window.location.href = `https://github.com/login/oauth/authorize?${q}`
-      })()
+      // Hosts outside the app's callback coverage would die on GitHub's
+      // "redirect_uri is not associated with this application" page —
+      // bounce through the central login host instead.
+      let central: URL | null = null
+      try { central = CENTRAL_LOGIN_HOST ? new URL(CENTRAL_LOGIN_HOST) : null } catch { central = null }
+      const directOk = !central || window.location.origin === central.origin ||
+        window.location.hostname.endsWith('.github.io')
+      if (!directOk && central) {
+        const back = window.location.origin + window.location.pathname
+        if (!returnOriginAllowed(new URL(back).origin)) {
+          setLoginError('This host is not allowed for login bounce.')
+          setLoginOpen(true)
+          return
+        }
+        const u = new URL(central.toString())
+        u.searchParams.set('login_return', back)
+        window.location.href = u.toString()
+        return
+      }
+      void authorizeDirect()
       return
     }
     setTokenInput('')
     setLoginOpen(true)
+  }
+
+  // Central-login bounce target: this host completed OAuth for ?login_return=
+  // and must hand the credential back. Consent first — auto-redirecting a
+  // token to an attacker-chosen origin would be a phishing hole.
+  useEffect(() => {
+    if (!AUTH_EXCHANGE_URL) return
+    const q = new URLSearchParams(window.location.search)
+    const ret = q.get('login_return')
+    if (!ret || q.get('code')) return // code path below consumes the return
+    let origin = ''
+    try { origin = new URL(ret).origin } catch { /* invalid */ }
+    if (!origin || !returnOriginAllowed(origin)) {
+      history.replaceState(null, '', window.location.pathname + window.location.hash)
+      showToast('Login bounce target not allowed.')
+      return
+    }
+    try { sessionStorage.setItem(LOGIN_RETURN_KEY, ret) } catch { /* private mode */ }
+    setLoginReturn(ret)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const cancelBounce = (): void => {
+    try { sessionStorage.removeItem(LOGIN_RETURN_KEY) } catch { /* private mode */ }
+    setLoginReturn(null)
+    history.replaceState(null, '', window.location.pathname + window.location.hash)
   }
 
   // OAuth return: GitHub redirected back with ?code=[&state=]. Exchange via
@@ -792,6 +867,31 @@ function App(): JSX.Element {
         const j = await r.json().catch(() => null)
         if (!r.ok || !j?.token) throw new Error(j?.error || 'exchange failed')
         const gh = await import('./utils/ghSync')
+        // Bounce return: hand the full credential back to the originating
+        // canvas via the address hash (never sent to any server) instead of
+        // logging in locally.
+        const back = sessionStorage.getItem(LOGIN_RETURN_KEY)
+        if (back) {
+          sessionStorage.removeItem(LOGIN_RETURN_KEY)
+          setLoginReturn(null)
+          try {
+            let origin = ''
+            try { origin = new URL(back).origin } catch { /* invalid */ }
+            if (!origin || !returnOriginAllowed(origin)) throw new Error('bounce target not allowed')
+            const u = new URL(back)
+            const h = new URLSearchParams()
+            h.set('token', j.token as string)
+            if (j.refresh_token) h.set('refresh_token', j.refresh_token as string)
+            if (j.expires_in) h.set('expires_in', String(j.expires_in))
+            u.hash = h.toString()
+            window.location.href = u.toString()
+            return
+          } catch (e) {
+            showToast(`Login failed: ${(e as Error).message}`)
+            history.replaceState(null, '', window.location.pathname + window.location.hash)
+            return
+          }
+        }
         gh.setToken(j.token, j.refresh_token ?? null, j.expires_in ?? null)
         refreshedForRef.current = null
         setGhToken(j.token as string)
@@ -1946,6 +2046,19 @@ function App(): JSX.Element {
       {toast && (
         <div className="toast" role="status" onClick={() => setToast(null)}>
           <span>{toast}</span>
+        </div>
+      )}
+      {loginReturn && (
+        <div className="login-panel" role="dialog" aria-label="Confirm login return">
+          <div className="login-title">Log in and return?</div>
+          <div className="login-hint">
+            After GitHub login this page hands the token back to <code>{loginReturn}</code>{' '}
+            (in the page address — never sent to a server). Continue only if you recognize it.
+          </div>
+          <div className="login-row">
+            <button className="login-cancel" onClick={cancelBounce}>Cancel</button>
+            <button className="login-save" onClick={() => { void authorizeDirect() }}>Continue to GitHub</button>
+          </div>
         </div>
       )}
       {loginOpen && (
