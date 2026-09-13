@@ -100,6 +100,7 @@ jobs:
       - name: Pick next unpublished version, tag it
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -129,7 +130,12 @@ jobs:
           fi
           git tag "v${VERSION}"
           git push origin HEAD:main "v${VERSION}"
-          echo "📦 Triggered release v${VERSION}"
+          echo "📦 Tagged release v${VERSION}"
+          # Pushes made with GITHUB_TOKEN never trigger workflow runs, so the
+          # tag push above would NOT start the release run — kick it off
+          # explicitly via the API (API-triggered dispatches do run).
+          gh workflow run "CI/CD" --ref "v${VERSION}" -f publish_npm=true
+          echo "🚀 Dispatched release run for v${VERSION}"
 
   release:
     name: Create Release
