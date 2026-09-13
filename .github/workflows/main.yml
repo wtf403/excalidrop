@@ -24,6 +24,8 @@ permissions:
   contents: write
   pages: write
   id-token: write
+  actions: write # auto-publish dispatches the release run explicitly (pushes
+  # made with GITHUB_TOKEN never trigger workflow runs on their own)
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
