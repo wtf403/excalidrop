@@ -13,6 +13,19 @@ const CANVAS_BRANCH = 'excalidrop';
 const GH_API = 'https://api.github.com';
 const TOOL_LIST_TTL_MS = 3600000;
 
+// --- base64 helpers (Workers have no Node Buffer)
+function b64encode(str) {
+  const bytes = new TextEncoder().encode(str);
+  let bin = '';
+  const CH = 0x8000;
+  for (let i = 0; i < bytes.length; i += CH) bin += String.fromCharCode(...bytes.subarray(i, i + CH));
+  return btoa(bin);
+}
+function b64decode(b64) {
+  const bin = atob(String(b64).replace(/\n/g, ''));
+  return new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
+}
+
 // --- best-effort quotas (per isolate; resets on evict — honest 429 either way)
 const DAY = () => new Date().toISOString().slice(0, 10);
 let dailyCount = 0;
@@ -90,10 +103,10 @@ async function getScene(repo, token) {
     b64 = (await blob.json()).content || null;
   }
   if (!b64) throw new Error('scene returned no content');
-  return { doc: JSON.parse(Buffer.from(b64, 'base64').toString('utf8')), sha: j.sha };
+  return { doc: JSON.parse(b64decode(b64)), sha: j.sha };
 }
 async function putScene(repo, token, doc, message, sha) {
-  const body = { message, content: Buffer.from(JSON.stringify(doc, null, 2)).toString('base64'), branch: CANVAS_BRANCH };
+  const body = { message, content: b64encode(JSON.stringify(doc, null, 2)), branch: CANVAS_BRANCH };
   if (sha) body.sha = sha;
   const r = await fetch(`${GH_API}/repos/${repo}/contents/${SCENE_PATH}`, { method: 'PUT', headers: ghHeaders(token), body: JSON.stringify(body) });
   if (r.status === 404) throw new Error(`branch ${CANVAS_BRANCH} missing — open the canvas viewer once to initialize it`);
@@ -483,7 +496,7 @@ async function callTool(env, name, args, token) {
       const elements = doc?.elements || [];
       const r = await fetch(`${GH_API}/repos/${repo}/contents/snapshots/${a.name}.json`, {
         method: 'PUT', headers: ghHeaders(token),
-        body: JSON.stringify({ message: `excalidrop: snapshot ${a.name} (${elements.length} elements)`, content: Buffer.from(JSON.stringify({ name: a.name, elements, createdAt: new Date().toISOString() }, null, 2)).toString('base64'), branch: CANVAS_BRANCH }),
+        body: JSON.stringify({ message: `excalidrop: snapshot ${a.name} (${elements.length} elements)`, content: b64encode(JSON.stringify({ name: a.name, elements, createdAt: new Date().toISOString() }, null, 2)), branch: CANVAS_BRANCH }),
       });
       if (!r.ok) throw new Error(`snapshot write ${r.status}: ${(await r.text()).slice(0, 150)}`);
       return textResult(`Snapshot "${a.name}" saved (${elements.length} elements) on ${repo}.`);
@@ -494,7 +507,7 @@ async function callTool(env, name, args, token) {
       if (r.status === 404) throw new Error(`Snapshot "${a.name}" not found`);
       if (!r.ok) throw new Error(`snapshot read ${r.status}`);
       const j = await r.json();
-      const snap = JSON.parse(Buffer.from(j.content, 'base64').toString('utf8'));
+      const snap = JSON.parse(b64decode(j.content));
       const els = (snap.elements || []).map((e) => ({ ...e, id: e.id || generateId() }));
       await mutateScene(repo, token, `excalidrop: restore ${a.name}`, (elements) => { elements.length = 0; for (const e of els) elements.push(e); });
       return textResult(`Snapshot "${a.name}" restored (${els.length} elements) on ${repo}.`);
