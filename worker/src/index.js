@@ -43,22 +43,7 @@ function originAllowed(origin, allowlist) {
 
 export { RelayRoom } from './relay.js';
 import { handleMcp } from './mcp.js';
-
-// Client metadata (CIMD-style discovery) so chat clients can discover the
-// GitHub OAuth endpoints for this MCP server without Dynamic Client
-// Registration. The worker itself never mints tokens — GitHub does.
-function oauthMetadata(host) {
-  return {
-    issuer: 'https://github.com',
-    authorization_endpoint: 'https://github.com/login/oauth/authorize',
-    token_endpoint: 'https://github.com/login/oauth/access_token',
-    response_types_supported: ['code'],
-    grant_types_supported: ['authorization_code', 'refresh_token'],
-    scopes_supported: ['repo', 'read:user'],
-    mcp_endpoint: `https://${host}/mcp`,
-    mcp_protocol_version: '2026-07-28',
-  };
-}
+import { handleOAuth } from './oauth.js';
 
 export default {
   async fetch(req, env) {
@@ -85,8 +70,16 @@ export default {
     if (url.pathname === '/mcp' || url.pathname === '/mcp/') {
       return handleMcp(req, env, cors);
     }
-    if (req.method === 'GET' && url.pathname === '/.well-known/oauth-authorization-server') {
-      return json(oauthMetadata(url.host), 200, cors);
+    // OAuth Authorization Server (DCR + authorize/callback/token) and
+    // RFC 9728 resource discovery. Replaces the old GitHub-pointing metadata
+    // doc, which could never complete an automated flow (no DCR on github.com).
+    if (
+      url.pathname === '/register' || url.pathname === '/authorize' ||
+      url.pathname === '/oauth/callback' || url.pathname === '/token' ||
+      url.pathname === '/.well-known/oauth-authorization-server' ||
+      url.pathname === '/.well-known/oauth-protected-resource'
+    ) {
+      return handleOAuth(req, env, cors);
     }
     if (url.pathname === '/relay' || url.pathname.startsWith('/rpc/')) {
       if (!env.RELAY) return json({ error: 'relay not configured (missing durable object binding)' }, 500, cors);

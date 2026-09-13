@@ -561,7 +561,14 @@ export async function handleMcp(req, env, cors) {
 
   const ip = req.headers.get('cf-connecting-ip') || 'unknown';
   const token = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
-  if (!token) return new Response(JSON.stringify(rpcError(null, -32001, 'missing Bearer token — connect with GitHub OAuth (repo scope)')), { status: 401, headers });
+  if (!token) {
+    // RFC 9728 discovery trigger: clients fetch resource_metadata → AS metadata → DCR.
+    const origin = new URL(req.url).origin;
+    return new Response(JSON.stringify(rpcError(null, -32001, 'missing Bearer token — register at POST /register, then OAuth authorize (see /.well-known/oauth-protected-resource)')), {
+      status: 401,
+      headers: { ...headers, 'WWW-Authenticate': `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource"` },
+    });
+  }
   if (!rateOk(`mcp:${hashToken(token)}`, 60, 60000) || !rateOk(`mcpip:${ip}`, 120, 60000)) {
     return new Response(JSON.stringify(rpcError(null, -32002, 'rate limited (60/min per token). Retry shortly.')), { status: 429, headers });
   }

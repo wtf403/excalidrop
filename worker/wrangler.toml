@@ -15,6 +15,13 @@ ALLOWED_REDIRECT_ORIGINS = "*.github.io,*.pages.dev"
 name = "RELAY"
 class_name = "RelayRoom"
 
+# OAuth Authorization Server store (DCR clients, login sessions, one-time
+# codes — all short-TTL). Absent on self-host deploys → oauth routes 500,
+# relay + /mcp with static tokens keep working.
+[[kv_namespaces]]
+binding = "OAUTH"
+id = "f956647497954a68a84d1c275d3b9343"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["RelayRoom"]

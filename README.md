@@ -324,6 +324,16 @@ Notes:
 - OAuth discovery for clients: `https://excalidrop.wtf403.workers.dev/.well-known/oauth-authorization-server`.
 - Browser login is bounce-free: hosts outside the OAuth callback list redirect through the central login host straight to GitHub (target allowlist-checked, no confirm modal).
 
+### One-click OAuth for chat clients (DCR)
+
+The worker is its own OAuth Authorization Server (spec `2026-07-28`, RFC 7591 + PKCE):
+
+- `POST /register` mints a client (`excc_*`/`excs_*`); `GET /authorize` bounces to GitHub; `/oauth/callback` swaps the code server-side (app secret never leaves the worker); `POST /token` returns the GitHub user token as `access_token`.
+- `GET /.well-known/oauth-protected-resource` + `WWW-Authenticate` challenge on `/mcp` 401s drive automatic discovery.
+- Contract tests: `node worker/test/oauth.test.mjs` (30 checks, stubbed KV + GitHub).
+- The demo OAuth App is third-party: for full self-ownership, register your own GitHub OAuth App with callback `https://<your-worker>/oauth/callback`, then set `MCP_GITHUB_CLIENT_ID` (wrangler.toml) + `wrangler secret put MCP_GITHUB_CLIENT_SECRET` and redeploy. Until then the shared id works for login but chat-client flows stop at GitHub's "Invalid Redirect URI" page.
+- Org repos with SAML SSO: authorize the OAuth App under the org's SSO settings, or API calls 404 despite a valid token.
+
 ## Testing
 
 ### Status
