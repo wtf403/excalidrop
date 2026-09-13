@@ -282,17 +282,72 @@ function deployToCloudflarePages(project: string, dir?: string): void {
   if (r.status !== 0) throw new Error('wrangler pages deploy failed. Run `wrangler login` first (or set CLOUDFLARE_API_TOKEN).');
 }
 
+/** Placeholder the published viewer bundle is built with (see build:frontend).
+ *  At Cloudflare deploy time it's swapped for the real slug — dependency-free,
+ *  so it works from npx installs without frontend sources or vite. Deliberately
+ *  slash-free: if a swap is ever skipped, detectRepo() ignores it and the
+ *  viewer fails visibly (no-repo) instead of pointing at a garbage repo. */
+const REPO_PLACEHOLDER = '__EXCALIDROP_REPO_SLUG__';
+
+/** Copy a dir tree (files only). */
+function copyDirRecursive(src: string, dest: string): void {
+  fs.mkdirSync(dest, { recursive: true });
+  for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+    const s = path.join(src, e.name);
+    const d = path.join(dest, e.name);
+    if (e.isDirectory()) copyDirRecursive(s, d);
+    else if (e.isFile()) {
+      fs.mkdirSync(path.dirname(d), { recursive: true });
+      fs.copyFileSync(s, d);
+    }
+  }
+}
+
+/** Stage the shared prebuilt bundle with the placeholder swapped for the real
+ *  slug. Returns null when the bundle has no placeholder (stale build) —
+ *  caller keeps ?repo=. */
+function stageSharedBundleWithSlug(slug: string): { dir: string; baked: boolean } {
+  const fallback = viewerDir();
+  try {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'excalidrop-viewer-'));
+    copyDirRecursive(fallback, tmp);
+    let swapped = 0;
+    const walk = (dir: string): void => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const f = path.join(dir, e.name);
+        if (e.isDirectory()) { walk(f); continue; }
+        if (!e.isFile() || /\.(png|jpg|jpeg|gif|webp|woff2?|ico|mp4)$/i.test(f)) continue;
+        const buf = fs.readFileSync(f);
+        if (!buf.includes(REPO_PLACEHOLDER)) continue;
+        const out = Buffer.from(buf.toString('utf8').split(REPO_PLACEHOLDER).join(slug), 'utf8');
+        fs.writeFileSync(f, out);
+        swapped++;
+      }
+    };
+    walk(tmp);
+    if (!swapped || !fs.existsSync(path.join(tmp, 'index.html'))) {
+      console.warn('Shared bundle has no repo placeholder (stale build) — deploying with ?repo=.');
+      return { dir: fallback, baked: false };
+    }
+    console.log(`Baked viewer for ${slug} via placeholder swap (${swapped} file(s)) — clean URL, no ?repo=.`);
+    return { dir: tmp, baked: true };
+  } catch (e) {
+    console.warn(`Viewer stage skipped (${(e as Error).message}) — deploying with ?repo=.`);
+    return { dir: fallback, baked: false };
+  }
+}
+
 /** Rebuild the viewer with VITE_REPO_SLUG baked in so the Cloudflare URL
- *  needs no ?repo=. Returns the staged dir + baked flag. Falls back to the
- *  shared prebuilt bundle (baked=false, keeps ?repo=) when running from an
- *  npm install without the frontend sources or vite. */
+ *  needs no ?repo=. From a checkout it rebuilds exactly; from an npm install
+ *  (no sources/vite) it swaps the placeholder in the shared bundle instead.
+ *  Only when neither is possible does it keep ?repo=. */
 function buildViewerDirForRepo(slug: string): { dir: string; baked: boolean } {
   const fallback = viewerDir();
   try {
     const root = path.resolve(__dirname, '..'); // checkout: dist/../ = repo root
     const srcIndex = path.join(root, 'frontend', 'index.html');
     const viteBin = path.join(root, 'node_modules', '.bin', 'vite');
-    if (!fs.existsSync(srcIndex) || !fs.existsSync(viteBin)) return { dir: fallback, baked: false };
+    if (!fs.existsSync(srcIndex) || !fs.existsSync(viteBin)) return stageSharedBundleWithSlug(slug);
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'excalidrop-viewer-'));
     console.log(`Baking viewer for ${slug} (clean URL, no ?repo=)…`);
     const r = spawnSync(viteBin, ['build', '--outDir', tmp], {

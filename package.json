@@ -10,7 +10,7 @@
   "scripts": {
     "start": "npm run build:server && node dist/mcp.js --repo=$EXCALIDROP_REPO",
     "build": "npm run build:frontend && npm run build:server",
-    "build:frontend": "vite build",
+    "build:frontend": "VITE_REPO_SLUG=${VITE_REPO_SLUG:-__EXCALIDROP_REPO_SLUG__} vite build",
     "build:server": "npx tsc",
     "build:types": "npx tsc --emitDeclarationOnly",
     "dev": "concurrently \"npm run dev:server\" \"vite\"",
