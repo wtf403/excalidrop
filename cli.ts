@@ -166,12 +166,58 @@ function projectNameForRepo(repo: string): string {
   return `excalidrop-${repo.replace('/', '-').toLowerCase().replace(/[^a-z0-9-]/g, '-')}`.slice(0, 60);
 }
 
-/** Short TUI suggestion: just the repo name (e.g. routerplus/excalidrop4 → excalidrop4).
+/** Short suggestion: just the repo name (e.g. routerplus/excalidrop4 → excalidrop4).
  *  The full owner-qualified name stays the headless default (stable URLs on
- *  republish); the TUI offers the short one since the user can see collisions. */
+ *  republish); the TUI offers the simplest free name instead. */
 function shortProjectNameForRepo(repo: string): string {
   const name = (repo.split('/')[1] || repo).toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
   return (name || projectNameForRepo(repo)).slice(0, 63);
+}
+
+/** Project name of the current Cloudflare deployment for this repo, if any.
+ *  Read from the local config — a republish must keep the URL stable. */
+function currentCfProject(slug: string, root: string): string {
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(root, CONFIG_NAME), 'utf8')) as {
+      remote?: string; target?: string; viewerUrl?: string;
+    };
+    if (j.remote !== slug || j.target !== 'cloudflare' || !j.viewerUrl) return '';
+    return j.viewerUrl.match(/^https:\/\/([a-z0-9-]+)\.pages\.dev\//i)?.[1]?.toLowerCase() ?? '';
+  } catch { return ''; }
+}
+
+/** Existing Pages projects in this Cloudflare account (single wrangler call).
+ *  Null when the list can't be obtained (logged out / offline). */
+function listCfProjects(): Set<string> | null {
+  try {
+    const r = runCapture('npx', [...WRANGLER, 'pages', 'project', 'list']);
+    if (r.status !== 0) return null;
+    const names = new Set<string>();
+    for (const line of r.out.split('\n')) {
+      const cell = line.match(/^│\s*([^│]+?)\s*│/)?.[1]?.trim().toLowerCase();
+      if (!cell || cell === 'project name') continue;
+      names.add(cell);
+    }
+    return names;
+  } catch { return null; }
+}
+
+/** Suggest the simplest free project name: current deployment first (URL
+ *  stability on republish), then bare repo → owner-repo →
+ *  excalidrop-owner-repo, first one not taken in this account. Falls back
+ *  to the simplest candidate when the list is unavailable. */
+function suggestProjectName(slug: string, root: string): string {
+  const current = normalizeProjectName(currentCfProject(slug, root), '');
+  if (current) return current;
+  const [owner, name] = slug.split('/');
+  const cands = [...new Set([
+    shortProjectNameForRepo(slug),
+    normalizeProjectName(`${owner}-${name}`, ''),
+    projectNameForRepo(slug),
+  ].map((s) => normalizeProjectName(s, '')).filter(Boolean))];
+  const taken = listCfProjects();
+  if (!taken) return cands[0]!;
+  return cands.find((c) => !taken.has(c.toLowerCase())) ?? cands[cands.length - 1]!;
 }
 
 function viewerUrlFor(repo: string, target: HostTarget, project?: string, bakedRepo?: boolean): string {
@@ -843,10 +889,12 @@ async function runTui(): Promise<void> {
 
   // Cloudflare project name = the *.pages.dev subdomain. Offer the choice
   // up front so the URL is predictable (and re-runnable without surprises).
-  // Suggest the bare repo name (excalidrop4, not excalidrop-routerplus-excalidrop4).
+  // Suggest the simplest free name (bare repo first, availability-checked
+  // against this account); republish keeps the current project for URL stability.
   let project = projectNameForRepo(slug);
   if (target === 'cloudflare') {
-    const suggested = shortProjectNameForRepo(slug);
+    const suggested = suggestProjectName(slug, findProjectRoot(process.cwd()));
+    if (suggested !== project) clack.log.info(`Shortest free project name: ${suggested} (default was ${project}).`);
     const nameAnswer = await clack.text({
       message: 'Cloudflare project name (viewer host)?',
       placeholder: suggested,
