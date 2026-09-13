@@ -627,9 +627,17 @@ function App(): JSX.Element {
 
   const initStaticMode = async (): Promise<void> => {
     const gh = await import('./utils/ghSync')
-    setGhRepo(gh.detectRepo())
+    const repo = gh.detectRepo()
+    setGhRepo(repo)
     setGhToken(gh.getToken())
     setStaticReady(true)
+    // No repo identity (clean pages.dev URL on an unbaked bundle, no ?repo=):
+    // the access effect early-returns on !ghRepo, so without this the pill
+    // sits on "Checking access…" forever. Fail visibly instead.
+    if (!repo) {
+      setAccess('denied')
+      setAccessDetail('no-repo')
+    }
   }
 
   // Seed the last-known file sha ASAP (from the previous save, else the
@@ -1827,11 +1835,11 @@ function App(): JSX.Element {
             ? (isConnected ? 'Live' : 'Offline')
             : access === 'unknown'
               ? 'Checking access…'
-              : libraryError || syncError || (access === 'editor'
-                ? (syncStatus === 'syncing' ? 'Saving…' : ghDirty ? 'Unsaved changes' : lastSyncTime ? `Saved ${formatSyncTime(lastSyncTime)}${ghLogin ? ` · ${ghLogin}` : ''}` : `Can edit${ghLogin ? ` · ${ghLogin}` : ''}`)
-                : accessDetail === 'expired' ? 'Session expired' : 'Read-only')}
-        </span>
-        {!serverMode && access === 'denied' && (
+                : libraryError || syncError || (access === 'editor'
+                  ? (syncStatus === 'syncing' ? 'Saving…' : ghDirty ? 'Unsaved changes' : lastSyncTime ? `Saved ${formatSyncTime(lastSyncTime)}${ghLogin ? ` · ${ghLogin}` : ''}` : `Can edit${ghLogin ? ` · ${ghLogin}` : ''}`)
+                  : accessDetail === 'expired' ? 'Session expired' : accessDetail === 'no-repo' ? 'No repo — add ?repo=owner/name' : 'Read-only')}
+            </span>
+            {!serverMode && access === 'denied' && accessDetail !== 'no-repo' && (
           <button
             className="save-icon-btn"
             title={accessDetail === 'expired' ? 'Session expired — log in again' : 'Log in with GitHub to edit'}

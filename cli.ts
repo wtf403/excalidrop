@@ -166,11 +166,20 @@ function projectNameForRepo(repo: string): string {
   return `excalidrop-${repo.replace('/', '-').toLowerCase().replace(/[^a-z0-9-]/g, '-')}`.slice(0, 60);
 }
 
-function viewerUrlFor(repo: string, target: HostTarget, project?: string): string {
+/** Short TUI suggestion: just the repo name (e.g. routerplus/excalidrop4 → excalidrop4).
+ *  The full owner-qualified name stays the headless default (stable URLs on
+ *  republish); the TUI offers the short one since the user can see collisions. */
+function shortProjectNameForRepo(repo: string): string {
+  const name = (repo.split('/')[1] || repo).toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+  return (name || projectNameForRepo(repo)).slice(0, 63);
+}
+
+function viewerUrlFor(repo: string, target: HostTarget, project?: string, bakedRepo?: boolean): string {
   if (target === 'cloudflare') {
-    // Generic viewer build can't infer the repo from a pages.dev host —
-    // detectRepo() reads it from ?repo= instead.
-    return `https://${project || projectNameForRepo(repo)}.pages.dev/?repo=${repo}`;
+    // Baked viewer builds carry the slug via VITE_REPO_SLUG, so the URL is
+    // clean. Shared-bundle deploys still need ?repo= (detectRepo reads it).
+    const suffix = bakedRepo ? '/' : `/?repo=${repo}`;
+    return `https://${project || projectNameForRepo(repo)}.pages.dev${suffix}`;
   }
   const [owner, name] = repo.split('/');
   return `https://${owner}.github.io/${name}/`;
@@ -215,7 +224,7 @@ function wranglerAccount(): { ok: boolean; display: string } {
   return { ok: true, display: m?.[0] ?? 'logged in' };
 }
 
-function deployToCloudflarePages(project: string): void {
+function deployToCloudflarePages(project: string, dir?: string): void {
   // wrangler 4 doesn't auto-create Pages projects and its Workers delegation
   // misfires on explicit asset dirs — create once, then deploy classic with --force.
   const create = spawnSync('npx', [...WRANGLER, 'pages', 'project', 'create', project, '--force', '--production-branch=main'], { stdio: 'pipe', encoding: 'utf8', env: process.env });
@@ -223,8 +232,36 @@ function deployToCloudflarePages(project: string): void {
   if (create.status !== 0 && !/already exists/i.test(createOut)) {
     throw new Error(`wrangler pages project create failed:\n${createOut.slice(-800)}\nRun \`wrangler login\` first (or set CLOUDFLARE_API_TOKEN).`);
   }
-  const r = spawnSync('npx', [...WRANGLER, 'pages', 'deploy', viewerDir(), '--project-name', project, '--force'], { stdio: 'inherit', env: process.env });
+  const r = spawnSync('npx', [...WRANGLER, 'pages', 'deploy', dir || viewerDir(), '--project-name', project, '--force'], { stdio: 'inherit', env: process.env });
   if (r.status !== 0) throw new Error('wrangler pages deploy failed. Run `wrangler login` first (or set CLOUDFLARE_API_TOKEN).');
+}
+
+/** Rebuild the viewer with VITE_REPO_SLUG baked in so the Cloudflare URL
+ *  needs no ?repo=. Returns the staged dir + baked flag. Falls back to the
+ *  shared prebuilt bundle (baked=false, keeps ?repo=) when running from an
+ *  npm install without the frontend sources or vite. */
+function buildViewerDirForRepo(slug: string): { dir: string; baked: boolean } {
+  const fallback = viewerDir();
+  try {
+    const root = path.resolve(__dirname, '..'); // checkout: dist/../ = repo root
+    const srcIndex = path.join(root, 'frontend', 'index.html');
+    const viteBin = path.join(root, 'node_modules', '.bin', 'vite');
+    if (!fs.existsSync(srcIndex) || !fs.existsSync(viteBin)) return { dir: fallback, baked: false };
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'excalidrop-viewer-'));
+    console.log(`Baking viewer for ${slug} (clean URL, no ?repo=)…`);
+    const r = spawnSync(viteBin, ['build', '--outDir', tmp], {
+      stdio: 'pipe', encoding: 'utf8', cwd: root,
+      env: { ...process.env, VITE_REPO_SLUG: slug, VITE_BASE: './' },
+    });
+    if (r.status !== 0 || !fs.existsSync(path.join(tmp, 'index.html'))) {
+      console.warn(`Viewer bake failed, deploying shared bundle with ?repo=:\n${((r.stdout || '') + (r.stderr || '')).slice(-500)}`);
+      return { dir: fallback, baked: false };
+    }
+    return { dir: tmp, baked: true };
+  } catch (e) {
+    console.warn(`Viewer bake skipped (${(e as Error).message}), deploying shared bundle with ?repo=.`);
+    return { dir: fallback, baked: false };
+  }
 }
 
 function detectSlug(): string {
@@ -455,7 +492,8 @@ function installEditor(id: EditorId, repo: string, root: string): InstallResult 
         : ['mcp', 'add', 'excalidrop', '--', 'npx', ...mcpArgs(repo)];
     const r = runCapture(bin, cargs);
     if (r.status === 0 && !/already exists/i.test(r.out)) {
-      return { id, outcome: 'added', detail: editorCommand(id, repo) };
+      // detail must NOT repeat the command — callers already print editorCommand.
+      return { id, outcome: 'added', detail: `installed via \`${bin} mcp add\`` };
     }
     if (/already exists/i.test(r.out)) {
       // Exit code is 0 even when nothing changed — re-read the file to say
@@ -631,8 +669,9 @@ async function cmdSetup(args: string[], editorOverride?: EditorId[], opts: { fro
       projectNameForRepo(slug),
     );
     console.log(`Cloudflare project: ${project} (viewer host ${project}.pages.dev)`);
-    deployToCloudflarePages(project);
-    viewerUrl = viewerUrlFor(slug, 'cloudflare', project);
+    const staged = buildViewerDirForRepo(slug);
+    deployToCloudflarePages(project, staged.dir);
+    viewerUrl = viewerUrlFor(slug, 'cloudflare', project, staged.baked);
   }
 
   // Don't declare victory until the viewer actually serves — first Pages /
@@ -661,7 +700,7 @@ async function cmdSetup(args: string[], editorOverride?: EditorId[], opts: { fro
   if (!mcp.mcpServers || typeof mcp.mcpServers !== 'object') mcp.mcpServers = {};
   mcp.mcpServers.excalidrop = { command: 'npx', args: mcpArgs(slug), env: { EXCALIDROP_RELAY_URL: process.env.EXCALIDROP_RELAY_URL || RELAY_DEFAULT } };
   fs.writeFileSync(mcpPath, JSON.stringify(mcp, null, 2) + '\n');
-  console.log(`MCP entry written to ${mcpPath}`);
+  console.log(`MCP entry written to ${mcpPath}\n`);
 
   const editors = editorOverride || parseEditorsFlag(args) || [...EDITOR_IDS];
   const noPrompt = args.includes('--no-prompt') || args.includes('-y');
@@ -804,12 +843,14 @@ async function runTui(): Promise<void> {
 
   // Cloudflare project name = the *.pages.dev subdomain. Offer the choice
   // up front so the URL is predictable (and re-runnable without surprises).
+  // Suggest the bare repo name (excalidrop4, not excalidrop-routerplus-excalidrop4).
   let project = projectNameForRepo(slug);
   if (target === 'cloudflare') {
+    const suggested = shortProjectNameForRepo(slug);
     const nameAnswer = await clack.text({
       message: 'Cloudflare project name (viewer host)?',
-      placeholder: project,
-      initialValue: project,
+      placeholder: suggested,
+      initialValue: suggested,
       validate: (v) => (normalizeProjectName(v, '') ? undefined : 'Lowercase letters, numbers, hyphens.'),
     });
     if (clack.isCancel(nameAnswer)) { clack.cancel('Aborted.'); process.exit(0); }

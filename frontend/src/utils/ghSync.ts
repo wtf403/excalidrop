@@ -841,6 +841,7 @@ export type Access = 'editor' | 'viewer' | 'denied';
 export type AccessDetail =
   | 'app-not-installed' // ghu_ token, but the user has no app installation reaching this repo
   | 'repo-not-covered' // installation(s) exist, but none of them include this repo
+  | 'no-repo' // viewer URL carries no repo identity (no ?repo=, no baked slug)
   | 'no-token-permissions' // classic token with no read access to the repo
   | 'expired' // the stored token is dead (401 on /user): re-login, don't re-explain install
   | null; // editor/viewer — no problem to report
