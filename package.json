@@ -1,6 +1,6 @@
 {
   "name": "excalidrop",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Remote GitHub-backed Excalidraw canvas + MCP server — no local server, one-command setup",
   "main": "dist/mcp.js",
   "type": "module",
