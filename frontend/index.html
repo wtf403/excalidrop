@@ -165,6 +165,23 @@
             background: rgba(0,0,0,0.14);
         }
 
+        /* Text link in the status pill: shown when the token is valid but
+           the GitHub App isn't installed on this repo (denied + install hint). */
+        .pill .install-link {
+            font-size: 12px;
+            font-weight: 600;
+            color: #1971c2;
+            text-decoration: none;
+            padding: 2px 6px;
+            border-radius: 0.5em;
+            white-space: nowrap;
+        }
+
+        .pill .install-link:hover {
+            background: rgba(25,113,194,0.12);
+            text-decoration: underline;
+        }
+
         .save-icon-btn.pull-available {
             background: #ffd60a;
             animation: pull-pulse 1.6s ease-in-out infinite;

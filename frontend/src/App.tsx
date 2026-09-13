@@ -483,10 +483,9 @@ function App(): JSX.Element {
   const [ghToken, setGhToken] = useState<string | null>(null)
   const [access, setAccess] = useState<'unknown' | 'editor' | 'viewer' | 'denied'>('unknown')
   const [accessDetail, setAccessDetail] = useState<import('./utils/ghSync').AccessDetail>(null)
-  // Device-flow re-login (token expired/revoked and there is no other login
-  // UI — without this the canvas degrades to read-only with no recovery).
-  const [loginOpen, setLoginOpen] = useState<boolean>(false)
-  const [loginError, setLoginError] = useState<string | null>(null)
+  // No manual-token UI by design: login is GitHub OAuth only (button below).
+  // A stored token that later 401s surfaces as accessDetail 'expired' with a
+  // re-login button — never a paste field.
   const [ghLogin, setGhLogin] = useState<string>('')
   const [ghRepo, setGhRepo] = useState<import('./utils/ghSync').RepoRef | null>(null)
   // Static identity (repo + token) finished resolving. Boot load waits for
@@ -748,8 +747,6 @@ function App(): JSX.Element {
   const _returnAllowEnv = (import.meta as any).env?.VITE_LOGIN_RETURN_ALLOW as string | undefined
   const LOGIN_RETURN_ALLOW = (_returnAllowEnv || '*.github.io,*.pages.dev').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
   const LOGIN_RETURN_KEY = 'excalidrop_login_return'
-  const [tokenInput, setTokenInput] = useState<string>('')
-  const [loginBusy, setLoginBusy] = useState<boolean>(false)
 
   /** Suffix-match a return origin against the bounce allowlist. */
   const returnOriginAllowed = (origin: string): boolean => {
@@ -779,7 +776,6 @@ function App(): JSX.Element {
   }
 
   const startLogin = (): void => {
-    setLoginError(null)
     if (AUTH_EXCHANGE_URL) {
       // Hosts outside the app's callback coverage would die on GitHub's
       // "redirect_uri is not associated with this application" page —
@@ -791,8 +787,7 @@ function App(): JSX.Element {
       if (!directOk && central) {
         const back = window.location.origin + window.location.pathname
         if (!returnOriginAllowed(new URL(back).origin)) {
-          setLoginError('This host is not allowed for login bounce.')
-          setLoginOpen(true)
+          showToast('This host is not allowed for login bounce.')
           return
         }
         const u = new URL(central.toString())
@@ -803,8 +798,9 @@ function App(): JSX.Element {
       void authorizeDirect()
       return
     }
-    setTokenInput('')
-    setLoginOpen(true)
+    // No paste-token fallback by design: without an exchange backend there is
+    // no login on this host (deploy with the relay URL configured instead).
+    showToast('GitHub login is unavailable on this host (no exchange backend configured).')
   }
 
   // Central-login bounce target: this host completed OAuth for ?login_return=
@@ -912,51 +908,6 @@ function App(): JSX.Element {
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  const cancelLogin = (): void => {
-    setLoginOpen(false)
-    setTokenInput('')
-    setLoginError(null)
-  }
-
-  const submitLogin = async (): Promise<void> => {
-    // Accept a bare token or a full #token= link / ?token= URL paste.
-    const m = tokenInput.match(/token=([A-Za-z0-9_]+)/)
-    const t = (m?.[1] || tokenInput).trim()
-    if (!t) {
-      setLoginError('Paste a token first.')
-      return
-    }
-    setLoginBusy(true)
-    setLoginError(null)
-    try {
-      const gh = await import('./utils/ghSync')
-      // Validate before storing: a typo'd/revoked token must not replace a
-      // working one, and the user gets the real reason immediately.
-      const verdict = await gh.checkAccess(ghRepo!, t).catch((e) => {
-        throw new Error(String((e as Error).message).includes('401')
-          ? 'That token was rejected (401) — check scopes and expiry.'
-          : (e as Error).message)
-      })
-      gh.setToken(t)
-      refreshedForRef.current = null
-      setGhToken(t)
-      setAccess(verdict.access)
-      setAccessDetail(verdict.detail)
-      setGhLogin(verdict.login)
-      setLoginOpen(false)
-      setTokenInput('')
-      showToast(verdict.access === 'editor'
-        ? 'Logged in — canvas unlocked'
-        : verdict.detail === 'repo-not-covered'
-          ? 'Logged in — repo is not in the Excalidrop app installation (read-only)'
-          : 'Logged in — read-only for this repo')
-    } catch (e) {
-      setLoginError((e as Error).message || 'Login failed.')
-    } finally {
-      setLoginBusy(false)
-    }
-  }
 
   // Static mode has no WebSocket, so poll GitHub for changes the agent (or
   // another tab) committed and apply them live. Never clobbers local edits:
@@ -1932,7 +1883,7 @@ function App(): JSX.Element {
               ? 'Checking access…'
                 : libraryError || syncError || (access === 'editor'
                   ? (syncStatus === 'syncing' ? 'Saving…' : ghDirty ? 'Unsaved changes' : lastSyncTime ? `Saved ${formatSyncTime(lastSyncTime)}${ghLogin ? ` · ${ghLogin}` : ''}` : `Can edit${ghLogin ? ` · ${ghLogin}` : ''}`)
-                  : accessDetail === 'expired' ? 'Session expired' : accessDetail === 'no-repo' ? 'No repo — add ?repo=owner/name' : 'Read-only')}
+                  : accessDetail === 'expired' ? 'Session expired' : accessDetail === 'no-repo' ? 'No repo — add ?repo=owner/name' : (accessDetail === 'repo-not-covered' || accessDetail === 'app-not-installed') ? 'Read-only — app not installed' : 'Read-only')}
             </span>
             {!serverMode && access === 'denied' && accessDetail !== 'no-repo' && (
           <button
@@ -1947,6 +1898,17 @@ function App(): JSX.Element {
               <line x1="15" y1="12" x2="3" y2="12" />
             </svg>
           </button>
+        )}
+        {!serverMode && access === 'denied' && (accessDetail === 'repo-not-covered' || accessDetail === 'app-not-installed') && (
+          <a
+            className="install-link"
+            href={`https://github.com/apps/${(import.meta as any).env?.VITE_GITHUB_APP_SLUG || 'excalidrop'}/installations/new`}
+            target="_blank"
+            rel="noreferrer"
+            title="The canvas token is valid, but the Excalidrop GitHub App isn't installed on this repo — install it for write access"
+          >
+            Install app
+          </a>
         )}
         {!serverMode && access === 'editor' && (
           <>
@@ -2041,35 +2003,6 @@ function App(): JSX.Element {
       {toast && (
         <div className="toast" role="status" onClick={() => setToast(null)}>
           <span>{toast}</span>
-        </div>
-      )}
-      {loginOpen && (
-        <div className="login-panel" role="dialog" aria-label="Log in with GitHub">
-          <div className="login-title">Log in with GitHub</div>
-          <div className="login-hint">
-            Create a token with <code>repo</code> scope{' '}
-            <a href="https://github.com/settings/tokens/new?scopes=repo&description=excalidrop-canvas" target="_blank" rel="noreferrer">
-              here
-            </a>{' '}
-            (or run <code>gh auth token</code> locally) and paste it below:
-          </div>
-          <input
-            className="login-input"
-            type="password"
-            autoComplete="off"
-            spellCheck={false}
-            placeholder="ghp_… / github_pat_…"
-            value={tokenInput}
-            onChange={(e) => setTokenInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') void submitLogin() }}
-          />
-          {loginError && <div className="login-error">{loginError}</div>}
-          <div className="login-row">
-            <button className="login-cancel" onClick={cancelLogin}>Cancel</button>
-            <button className="login-save" onClick={() => { void submitLogin() }} disabled={loginBusy}>
-              {loginBusy ? 'Checking…' : 'Save token'}
-            </button>
-          </div>
         </div>
       )}
       </footer>

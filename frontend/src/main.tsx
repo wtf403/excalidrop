@@ -11,8 +11,8 @@ if (!rootElement) {
 // Disallow canvas camera zoom when the gesture starts on UI chrome.
 //
 // Excalidraw zooms on ctrl/meta+wheel anywhere inside its container,
-// including toolbars, menus, dialogs and our own overlays (.pill, .toast,
-// .login-panel). That makes scrolling a menu or pinching over a button
+// including toolbars, menus, dialogs and our own overlays (.pill, .toast).
+// That makes scrolling a menu or pinching over a button
 // unexpectedly move the canvas camera. Capture the wheel before Excalidraw
 // sees it: zoom gestures whose target is NOT the drawing canvas itself are
 // swallowed, while gestures on the canvas pass through untouched. Plain

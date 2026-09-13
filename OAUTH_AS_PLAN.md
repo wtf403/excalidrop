@@ -19,6 +19,20 @@ verified live + via CDP. What remains needs the repo owner in the browser.
   Excalidrop App → read-only verdict is by design). Relay WS verified 101 +
   `relay_ready` with SSO-authorized token.
 
+## Correction (CDP request-header inspection, excalidrop8)
+
+- The stored `ghu_` token is a **GitHub App user token** (proof: it got 200
+  on `/user/installations`, which 403s for classic OAuth tokens), NOT a stale
+  or scopeless OAuth token. Empty `x-oauth-scopes` is normal for app tokens;
+  no `X-GitHub-SSO` header was present either.
+- Verdict `denied` + `repo-not-covered` is CORRECT: installation 161002709
+  exists but does not cover `RouterPlus/excalidrop8`. No viewer bug.
+- Viewer changes (this commit): paste-token panel REMOVED entirely (OAuth
+  button only; exchange-less hosts get a toast, no fallback UI); denied pill
+  now reads "Read-only — app not installed" + an "Install app" link
+  (`github.com/apps/<slug>/installations/new`) when `repo-not-covered` /
+  `app-not-installed`. Boot 401 handling (`expired` detail) already existed.
+
 ## User steps (browser, ~5 min)
 
 - [ ] 1. Create own GitHub OAuth App (`github.com/settings/developers` →
