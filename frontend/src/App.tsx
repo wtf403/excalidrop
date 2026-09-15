@@ -92,6 +92,39 @@ const authHeaders = (): Record<string, string> => {
 };
 const AUTO_SYNC_DEBOUNCE_MS = 1200;
 
+// Static viewer hosts never serve the excalidrop API. Every place that
+// decides "load from GitHub vs /api/*" MUST use this single predicate —
+// Cloudflare Pages SPA-fallbacks unknown paths to index.html with HTTP 200,
+// so treating a *.pages.dev host as a server makes res.json() throw on
+// "<!DOCTYPE" and aborts the whole boot load (no baseline, no autosave).
+const isStaticViewerHost = (): boolean => {
+  const host = window.location.hostname
+  return host.includes('github.io') || host.endsWith('.pages.dev') ||
+         window.location.pathname.startsWith('/excalidrop/')
+}
+
+// Real content delta between two upstream snapshots: new ids count as added,
+// shared ids with differing JSON as updated. Ordering/defProps noise that a
+// naive length/base diff reports as "+N" is ignored here.
+const diffElementChangeCount = (base: any[], up: any[]): { added: number; updated: number } => {
+  let added = 0
+  let updated = 0
+  const seen = new Map<string, any>()
+  for (const e of base || []) {
+    if (e?.id) seen.set(String(e.id), e)
+  }
+  for (const e of up || []) {
+    const id = e?.id
+    if (id == null) continue
+    const b = seen.get(String(id))
+    if (!b) { added++ }
+    else if (JSON.stringify(b) !== JSON.stringify(e)) { updated++ }
+  }
+  return { added, updated }
+}
+
+
+
 
 // Crash-safe local journal. Network requests fired from beforeunload /
 // pagehide fundamentally cannot save reliably: keepalive bodies are capped
@@ -391,6 +424,10 @@ function App(): JSX.Element {
   const [toast, setToast] = useState<string | null>(null)
   const [remoteAvailable, setRemoteAvailable] = useState<boolean>(false)
   const baseElementsRef = useRef<any[]>([])
+  // Raw upstream payload of the most recent *toasted* remote change — dedupes
+  // repeat "Teammate updated canvas" toasts on successive poll ticks while the
+  // user stays dirty (base/lastUpstream stay the untouched merge base).
+  const lastNotifiedUpRef = useRef<string | null>(null)
   const showToast = (msg: string): void => {
     setToast(msg)
     setTimeout(() => setToast((t) => (t === msg ? null : t)), 4000)
@@ -599,9 +636,7 @@ function App(): JSX.Element {
     // Cloudflare Pages SPA-fallbacks unknown paths to index.html with HTTP
     // 200, and the old `r.ok` check mistook that for a live server
     // (stuck "Offline" pill, empty canvas, WS retry storm).
-    const host = window.location.hostname;
-    const isStaticHost = host.includes('github.io') || host.endsWith('.pages.dev') ||
-                         window.location.pathname.startsWith('/excalidrop/')
+    const isStaticHost = isStaticViewerHost()
     if (isStaticHost) {
       initStaticMode()
     } else {
@@ -1040,10 +1075,35 @@ function App(): JSX.Element {
       const upRaw = JSON.stringify(up)
       if (upRaw === lastUpstreamRef.current) return
       // Remote moved while we have unsaved work: don't auto-apply (would
-      // fight the user's strokes) — surface the Pull button + a short toast.
+      // fight the user's strokes) — surface the Pull button. Toast only on a
+      // REAL content delta: the old +length-of-diff count fired "+0 elements"
+      // toasts when upstream only reordered/rewrote defProps, and repeated
+      // every tick because lastUpstreamRef was never advanced here.
       if (wasDirty) {
-        setRemoteAvailable(true)
-        showToast(`Teammate updated canvas (+${Math.max(0, up.length - baseElementsRef.current.length)} elements) — Pull to merge`)
+        if (upRaw !== lastNotifiedUpRef.current) {
+          lastNotifiedUpRef.current = upRaw
+          const { added, updated } = diffElementChangeCount(baseElementsRef.current, up)
+          if (added + updated > 0) {
+            // "Teammate" only when a DIFFERENT GitHub user moved upstream —
+            // the user's own other tab / CLI commit is still "me", and calling
+            // it a teammate toast is noise (they're the solo writer).
+            let isSelf = false
+            if (ghLogin && ghRepo) {
+              try {
+                const gh = await import('./utils/ghSync')
+                const info = await gh.lastCanvasCommit(ghRepo, ghToken)
+                isSelf = !!info && info.author === ghLogin
+              } catch { /* keep toast on uncertainty */ }
+            }
+            if (!isSelf) {
+              setRemoteAvailable(true)
+              const what = added > 0
+                ? `${added} new element${added === 1 ? '' : 's'}${updated ? `, ${updated} changed` : ''}`
+                : `${updated} element${updated === 1 ? '' : 's'} changed`
+              showToast(`Teammate updated canvas (${what}) — Pull to merge`)
+            }
+          }
+        }
         return
       }
       // Re-check dirtiness after the await: the user may have drawn while fetching.
@@ -1152,15 +1212,15 @@ function App(): JSX.Element {
   }, [ghDirty])
 
   const pushToGitHub = async (isClosing: boolean): Promise<void> => {
-    if (serverMode || !excalidrawAPI || !ghToken || !ghRepo) return
-    if (access !== 'editor') return
-    if (ghPushInFlightRef.current) return
+    if (serverMode || !excalidrawAPI || !ghToken || !ghRepo) { return }
+    if (access !== 'editor') { return }
+    if (ghPushInFlightRef.current) { return }
     // No baseline yet (load never completed and nothing ever pushed): we know
     // nothing about upstream — writing now would be a blind overwrite. This
     // is how fresh tabs wiped scenes with "0 elements" on close.
-    if (lastPushedHashRef.current === null) return
+    if (lastPushedHashRef.current === null) { return }
     const api = excalidrawAPIRef.current
-    if (!api) return
+    if (!api) { return }
     const localElements = api.getSceneElements().filter(el => !el.isDeleted)
     // Nothing unsaved — not even on close. Skipping avoids no-op commits.
     // (A deliberate clear-canvas differs from baseline, so it still saves.)
@@ -1300,6 +1360,7 @@ function App(): JSX.Element {
   // Pages snapshot instead of the live blob, showing an outdated scene until
   // the next poll tick heals it.
   const bootLoadedRef = useRef<boolean>(false)
+  const bootLoadRetriesRef = useRef<number>(0)
   useEffect(() => {
     if (!excalidrawAPI || bootLoadedRef.current) return
     if (serverMode) {
@@ -1318,34 +1379,41 @@ function App(): JSX.Element {
 
   const loadExistingElements = async (): Promise<void> => {
     try {
-      // Only check for server mode if the page is served from a server (not GitHub Pages static)
-      const isStaticHost = window.location.hostname.includes('github.io') ||
-                           window.location.pathname.startsWith('/excalidrop/')
-      if (!isStaticHost) {
-        const response = await fetch('/api/elements', { headers: authHeaders() }).catch(() => null)
-        if (response?.ok) {
-          const result: ApiResponse = await response.json()
-          if (result.success && result.elements && result.elements.length > 0) {
-            const cleanedElements = result.elements.map(cleanElementForExcalidraw)
-            const convertedElements = convertElementsPreservingImageProps(cleanedElements)
-            if (excalidrawAPI) {
-              applyLoadedElements(convertedElements)
+      // Server-loaded hosts (a real excalidrop backend) go through the API;
+      // everything else loads from GitHub. Never let a misdetected host
+      // abort the load: a static host SPA-fallbacks /api/elements to
+      // index.html (HTTP 200, "<!DOCTYPE") — res.json() throws, and skipping
+      // the rest here leaves lastPushedHash unseeded so autosave is dead.
+      if (!isStaticViewerHost()) {
+        try {
+          const response = await fetch('/api/elements', { headers: authHeaders() }).catch(() => null)
+          if (response?.ok) {
+            let result: ApiResponse | null = null
+            try { result = await response.json() } catch { result = null }
+            if (result?.success && result.elements) {
+              if (result.elements.length > 0) {
+                const cleanedElements = result.elements.map(cleanElementForExcalidraw)
+                const convertedElements = convertElementsPreservingImageProps(cleanedElements)
+                if (excalidrawAPI) {
+                  applyLoadedElements(convertedElements)
+                }
+              }
+              const filesResponse = await fetch('/api/files', { headers: authHeaders() })
+              if (filesResponse.ok) {
+                const filesResult = await filesResponse.json() as ApiResponse
+                if (filesResult.files) {
+                  excalidrawAPI?.addFiles(Object.values(filesResult.files))
+                }
+              }
+              // Recover journaled work that never reached the backend (tab
+              // closed before the sync went out), then push it up.
+              if (await restoreLocalSnapshot(result.elements || [])) {
+                setTimeout(() => { void syncToBackend({ silent: true }) }, 1500)
+              }
+              return
             }
           }
-          const filesResponse = await fetch('/api/files', { headers: authHeaders() })
-          if (filesResponse.ok) {
-            const filesResult = await filesResponse.json() as ApiResponse
-            if (filesResult.files) {
-              excalidrawAPI?.addFiles(Object.values(filesResult.files))
-            }
-          }
-          // Recover journaled work that never reached the backend (tab closed
-          // before the sync went out), then push it up.
-          if (await restoreLocalSnapshot(result.elements || [])) {
-            setTimeout(() => { void syncToBackend({ silent: true }) }, 1500)
-          }
-          return
-        }
+        } catch { /* not a real backend — fall through to GitHub */ }
       }
       const gh = await import('./utils/ghSync')
       const scene = await gh.loadStaticScene(ghRepo, ghToken)
@@ -1371,6 +1439,15 @@ function App(): JSX.Element {
       }
     } catch (error) {
       console.error('Error loading existing elements:', error)
+      // A failed boot load leaves lastPushedHash unseeded, which permanently
+      // disables autosave (push bails while the baseline is unknown). Retry
+      // so a transient failure (SPA-fallback misdetect, flaky fetch) never
+      // cripples saving for the rest of the session.
+      if (bootLoadRetriesRef.current < 5 && !serverMode && staticReady) {
+        bootLoadRetriesRef.current += 1
+        const backoff = (bootLoadRetriesRef.current ** 2) * 1500
+        setTimeout(() => { void loadExistingElements() }, backoff)
+      }
     }
   }
 

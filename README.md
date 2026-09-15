@@ -15,6 +15,9 @@ Keywords: Excalidraw agent skill, Excalidraw MCP server, AI diagramming, Claude 
 
 ![MCP Excalidraw Demo](docs/demo.gif)
 
+To make iframes work use Ignore X-Frames extension
+chrome://extensions/?id=gleekbfjekiniecknbkamfmkohkpodhe
+
 ## Table of Contents
 
 - [Demo](#demo)

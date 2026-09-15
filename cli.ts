@@ -294,7 +294,8 @@ async function resolveTarget(repo: string, explicit?: string): Promise<HostTarge
   return (await isPrivateRepo(repo)) === true ? 'cloudflare' : 'pages';
 }
 
-const WRANGLER = ['-y', 'wrangler@4'];
+const CACHE_DIR = path.join(os.homedir(), '.cache', 'wrangler');
+const WRANGLER = ['-y', 'wrangler@4', `--cache-dir=${CACHE_DIR}`];
 
 // Which Cloudflare identity would a Pages deploy use? whoami fails when
 // logged out; a CLOUDFLARE_API_TOKEN works without a login. Deploys always
@@ -964,8 +965,10 @@ async function cmdLogin(): Promise<void> {
 }
 
 async function cmdStatus(): Promise<void> {
-  const flag = process.argv.find((a) => a.startsWith('--repo='));
-  const repo = flag ? flag.split('=').slice(1).join('=') : detectSlug();
+  const eq = process.argv.find((a) => a.startsWith('--repo='));
+  const i = process.argv.indexOf('--repo');
+  const sp = i !== -1 ? process.argv[i + 1] : undefined;
+  const repo = (eq ? eq.split('=').slice(1).join('=') : (typeof sp === 'string' && sp.includes('/') ? sp : '')) || detectSlug();
   console.log(`repo: ${repo || '(none — run setup or pass --repo=owner/repo)'}`);
   console.log(`auth: ${ghToken() ? 'ok (env/gh CLI/stored)' : 'missing — run `gh auth login` or `npx excalidrop login`'}`);
   console.log(`relay: ${process.env.EXCALIDROP_RELAY_URL || RELAY_DEFAULT}`);
@@ -1173,7 +1176,7 @@ async function runTui(): Promise<void> {
   }
 
   const s = clack.spinner();
-  s.start('Publishing viewer + wiring MCP…');
+  s.start('Publishing viewer + wiring MCP');
   let viewerUrl: string;
   let live = false;
   let installs: InstallResult[] = [];

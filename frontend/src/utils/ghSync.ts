@@ -42,6 +42,33 @@ export function rawSceneUrlForCommit(ref: RepoRef, commitSha: string): string {
   return `https://raw.githubusercontent.com/${ref.owner}/${ref.repo}/${commitSha}/canvas.excalidraw`;
 }
 
+export interface CanvasCommitInfo {
+  author: string | null;
+  date: string | null;
+}
+
+// Newest commit touching canvas.excalidraw on the canvas branch. Callers use
+// this to distinguish "someone else moved the canvas" from "my own other tab
+// / CLI committed" — the latter must not surface a "Teammate" toast.
+export async function lastCanvasCommit(ref: RepoRef, token?: string | null): Promise<CanvasCommitInfo | null> {
+  try {
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const r = await timedFetch(
+      `https://api.github.com/repos/${ref.owner}/${ref.repo}/commits?path=canvas.excalidraw&sha=${encodeURIComponent(ref.branch)}&per_page=1`,
+      { cache: 'no-store', headers },
+    );
+    if (!r.ok) return null;
+    const j = await r.json().catch(() => null);
+    const c = Array.isArray(j) ? j[0] : null;
+    if (!c) return null;
+    const author = c?.commit?.author?.login ?? c?.commit?.committer?.login ?? c?.author?.login ?? null;
+    return { author, date: c?.commit?.committer?.date ?? null };
+  } catch {
+    return null;
+  }
+}
+
 // --- Anonymous fresh reads (no token, public repos only) -------------------
 // Unauthenticated Contents API calls work (CORS *) but are limited to
 // 60 req/hour/IP (vs 5000 with a token). A 20s poll alone burns 180/hr, so:
@@ -738,8 +765,14 @@ export async function loadStaticScene(ref?: RepoRef, token?: string | null): Pro
     } catch { /* fall through to Pages copy */ }
   }
   const r = await fetch('./canvas.excalidraw', { cache: 'no-cache' });
-  if (!r.ok) throw new Error(`scene fetch ${r.status}`);
-  const j = await r.json();
+  // Absent canvas = known-EMPTY upstream, not an error. Callers seed a
+  // baseline from the result before enabling autosave; throwing here would
+  // leave no baseline and autosave permanently disabled. All three GitHub
+  // sources above already failed by this point, so a 404 means there is
+  // genuinely no scene anywhere — saving the first stroke is a create.
+  if (!r.ok) return { elements: [], files: {} };
+  const j = await r.json().catch(() => null);
+  if (!j) return { elements: [], files: {} };
   return { elements: j.elements || [], files: j.files || {} };
 }
 
