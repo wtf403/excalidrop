@@ -294,15 +294,38 @@ async function resolveTarget(repo: string, explicit?: string): Promise<HostTarge
   return (await isPrivateRepo(repo)) === true ? 'cloudflare' : 'pages';
 }
 
-const CACHE_DIR = path.join(os.homedir(), '.cache', 'wrangler');
-const WRANGLER = ['-y', 'wrangler@4', `--cache-dir=${CACHE_DIR}`];
+const WRANGLER = ['-y', 'wrangler@4'];
+
+// Keep wrangler's cache out of the user's project: WRANGLER_CACHE_DIR
+// overrides the default (node_modules/.cache/wrangler or .wrangler/cache).
+// Persistent XDG location outside the project — survives reboots and is
+// shared with a bare `npx wrangler login` when possible. Respects an
+// explicit user-set WRANGLER_CACHE_DIR.
+const WRANGLER_CACHE_FALLBACK = path.join(os.homedir(), '.cache', 'wrangler');
+function wranglerEnv(): NodeJS.ProcessEnv {
+  if (process.env.WRANGLER_CACHE_DIR) return process.env;
+  try {
+    fs.mkdirSync(WRANGLER_CACHE_FALLBACK, { recursive: true });
+  } catch { /* spawn will surface real errors */ }
+  return { ...process.env, WRANGLER_CACHE_DIR: WRANGLER_CACHE_FALLBACK };
+}
 
 // Which Cloudflare identity would a Pages deploy use? whoami fails when
 // logged out; a CLOUDFLARE_API_TOKEN works without a login. Deploys always
 // run under the USER's own account/quota — never the author's.
 function wranglerAccount(): { ok: boolean; display: string } {
   if (process.env.CLOUDFLARE_API_TOKEN) return { ok: true, display: 'API token (CLOUDFLARE_API_TOKEN)' };
-  const r = runCapture('npx', [...WRANGLER, 'whoami']);
+  // Try with our isolated cache first; fall back to the user's default
+  // cache so a `npx wrangler login` done outside excalidrop is still seen.
+  let r = runCapture('npx', [...WRANGLER, 'whoami']);
+  if (r.status !== 0 && !process.env.WRANGLER_CACHE_DIR) {
+    const fallback = spawnSync('npx', [...WRANGLER, 'whoami'], { encoding: 'utf8', env: process.env });
+    const out = `${fallback.stdout || ''}\n${fallback.stderr || ''}`;
+    if (fallback.status === 0) {
+      const m2 = out.match(/[\w.+-]+@[\w-]+\.[\w.]+/);
+      return { ok: true, display: m2?.[0] ?? 'logged in' };
+    }
+  }
   if (r.status !== 0) return { ok: false, display: '' };
   const m = r.out.match(/[\w.+-]+@[\w-]+\.[\w.]+/);
   return { ok: true, display: m?.[0] ?? 'logged in' };
@@ -311,12 +334,12 @@ function wranglerAccount(): { ok: boolean; display: string } {
 function deployToCloudflarePages(project: string, dir?: string): void {
   // wrangler 4 doesn't auto-create Pages projects and its Workers delegation
   // misfires on explicit asset dirs — create once, then deploy classic with --force.
-  const create = spawnSync('npx', [...WRANGLER, 'pages', 'project', 'create', project, '--force', '--production-branch=main'], { stdio: 'pipe', encoding: 'utf8', env: process.env });
+  const create = spawnSync('npx', [...WRANGLER, 'pages', 'project', 'create', project, '--force', '--production-branch=main'], { stdio: 'pipe', encoding: 'utf8', env: wranglerEnv() });
   const createOut = (create.stdout || '') + (create.stderr || '');
   if (create.status !== 0 && !/already exists/i.test(createOut)) {
     throw new Error(`wrangler pages project create failed:\n${createOut.slice(-800)}\nRun \`wrangler login\` first (or set CLOUDFLARE_API_TOKEN).`);
   }
-  const r = spawnSync('npx', [...WRANGLER, 'pages', 'deploy', dir || viewerDir(), '--project-name', project, '--force'], { stdio: 'inherit', env: process.env });
+  const r = spawnSync('npx', [...WRANGLER, 'pages', 'deploy', dir || viewerDir(), '--project-name', project, '--force'], { stdio: 'inherit', env: wranglerEnv() });
   if (r.status !== 0) throw new Error('wrangler pages deploy failed. Run `wrangler login` first (or set CLOUDFLARE_API_TOKEN).');
 }
 
@@ -603,7 +626,7 @@ interface InstallResult { id: EditorId; outcome: InstallOutcome; detail: string;
 
 function runCapture(cmd: string, args: string[], cwd?: string): { status: number | null; out: string } {
   try {
-    const r = spawnSync(cmd, args, { encoding: 'utf8', ...(cwd ? { cwd } : {}) });
+    const r = spawnSync(cmd, args, { encoding: 'utf8', env: wranglerEnv(), ...(cwd ? { cwd } : {}) });
     return { status: r.status, out: `${r.stdout || ''}\n${r.stderr || ''}` };
   } catch (e) { return { status: 1, out: (e as Error).message }; }
 }
@@ -1104,7 +1127,7 @@ async function runTui(): Promise<void> {
       });
       if (clack.isCancel(login)) { clack.cancel('Aborted.'); process.exit(0); }
       if (login) {
-        spawnSync('npx', [...WRANGLER, 'login'], { stdio: 'inherit', env: process.env });
+        spawnSync('npx', [...WRANGLER, 'login'], { stdio: 'inherit', env: wranglerEnv() });
         acct = wranglerAccount();
       }
       if (!acct.ok) {
